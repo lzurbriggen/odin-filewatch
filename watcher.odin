@@ -28,6 +28,7 @@ _Worker_Data :: struct {
 	chan:          _Msg_Chan,
 	debounce_time: time.Duration,
 	path:          string,
+	recursive:     bool,
 }
 
 create :: proc(channel_size: int) -> (Watcher, runtime.Allocator_Error) {
@@ -78,6 +79,7 @@ watch_dir :: proc(
 			chan = watcher.chan,
 			debounce_time = debounce_time,
 			status_chan = status_chan,
+			recursive = recursive,
 		},
 		status_chan = status_chan,
 	}

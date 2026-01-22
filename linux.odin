@@ -21,7 +21,11 @@ _watch_worker :: proc(t: ^thread.Thread) {
 	// log.debug(thread_data.path)
 
 	log.debug("Fanotify init...")
-	fd, err := fanotify_init(FAN_CLASS_NOTIF | FAN_REPORT_FID, os.O_RDONLY)
+	// TODO: O_LARGEFILE?
+	fd, err := fanotify_init(
+		FAN_CLASS_NOTIF | FAN_REPORT_FID | FAN_REPORT_DIR_FID | FAN_REPORT_DFID_NAME,
+		os.O_RDONLY,
+	)
 	if err != .NONE {
 		log.error(err)
 		chan.send(thread_data.status_chan, false)
@@ -30,10 +34,15 @@ _watch_worker :: proc(t: ^thread.Thread) {
 
 	log.debug("Fanotify mark...")
 	mark: int
+
+	mask := FAN_MODIFY | FAN_DELETE | FAN_CREATE | FAN_ONDIR | FAN_ATTRIB
+	if thread_data.recursive {
+		mask |= FAN_EVENT_ON_CHILD
+	}
 	mark, err = fanotify_mark(
 		fd,
-		FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
-		.FAN_FS_ERROR,
+		FAN_MARK_ADD,
+		mask,
 		linux.AT_FDCWD,
 		strings.clone_to_cstring(thread_data.path),
 	)
@@ -43,14 +52,13 @@ _watch_worker :: proc(t: ^thread.Thread) {
 		return
 	}
 
-
 	msg_buf := Msg_Buffer {
 		debounce_time = thread_data.debounce_time,
 	}
 	// TODO: destroy proc
 	defer delete(msg_buf.messages)
 
-	log.info("send")
+	log.info("Sending ready signal.")
 	chan.send(thread_data.status_chan, true)
 
 	fan_buf := make([]u8, 8192)
@@ -79,21 +87,15 @@ _watch_worker :: proc(t: ^thread.Thread) {
 		when ODIN_OS == .Linux {
 			res, err := linux.read(fd, fan_buf)
 			if err != .NONE {
+				log.error("Error when reading fanotify buffer:", err)
 				// TODO
 			}
-			event := transmute(^fanotify_event_metadata)&fan_buf
-			info: ^fanotify_event_info_header
-			fan_err: ^fanotify_event_info_error
-			fid: ^fanotify_event_info_fid
+			event := cast(^fanotify_event_metadata)&fan_buf[0]
+
 			off: int
-
-			curr_len := len(fan_buf)
-			for {
-				if !FAN_EVENT_OK(event, curr_len) {
-					break
-				}
-				event = FAN_EVENT_NEXT(event, &curr_len)
-
+			curr_len := res
+			for FAN_EVENT_OK(event, curr_len) {
+				defer event = FAN_EVENT_NEXT(event, &curr_len)
 				// TODO: log
 				// if event.mask != FAN_FS_ERROR {
 				// 	continue
@@ -103,34 +105,84 @@ _watch_worker :: proc(t: ^thread.Thread) {
 				// }
 
 				// TODO: size of ptr instead?
-				off = size_of(rawptr)
-				for {
-					if off >= int(event.event_len) {
+				off = size_of(fanotify_event_metadata)
+				for off < int(event.event_len) {
+					info := cast(^fanotify_event_info_header)(uintptr(event) + uintptr(off))
+
+					log.info(info)
+
+					#partial switch info.info_type {
+					case .FAN_EVENT_INFO_TYPE_DFID_NAME:
+						fid := cast(^fanotify_event_info_fid)info
+						fh := cast(^File_Handle)(uintptr(fid) + size_of(fanotify_event_info_fid))
+						str_ptr := cast(^u8)(uintptr(fh) +
+							size_of(File_Handle) +
+							uintptr(fh.bytes))
+						name := transmute(cstring)str_ptr
+						log.info("name", name)
+					case .FAN_EVENT_INFO_TYPE_DFID:
+					// fid := cast(^fanotify_event_info_fid)info
+
+					// // pointer to struct file_handle inside the event
+					// fh := cast(^os.Handle)(uintptr(fid) + size_of(fanotify_event_info_fid))
+
+					// mount_fd, err := linux.open(
+					// 	strings.clone_to_cstring(thread_data.path),
+					// 	{.PATH, .DIRECTORY},
+					// 	nil,
+					// )
+					// fd := linux.syscall(
+					// 	linux.SYS_open_by_handle_at,
+					// 	mount_fd,
+					// 	fh,
+					// 	os.O_RDONLY | os.O_CLOEXEC,
+					// )
+
+					// if fd < 0 {
+					// 	// err := os.errno()
+					// 	log.error("open_by_handle_at failed", err)
+					// } else {
+					// 	// fd is now an open fd to the object
+					// }
+					// // fid.handle
+					// // linux.SYS_open_by_handle_at
+					// // TODO
+					// buf := make([]u8, 8192)
+					// pathlen: int
+					// pathlen, err = linux.readlink(fmt.ctprintf("/proc/self/fd/%i", fd), buf)
+					// // log.info(
+					// // 	transmute(cstring)&buf[0], // fmt.ctprintf("/proc/self/fd/%i", event.fd),
+					// // )
+					// log.info(transmute(cstring)(&buf))
+					case .FAN_EVENT_INFO_TYPE_FID:
+					// fid := cast(^fanotify_event_info_fid)info
+					// open_res := linux.syscall(
+					// 	linux.SYS_open_by_handle_at,
+					// 	fid.fsid,
+					// 	&fid.handle[0],
+					// )
+					// // fid.handle
+					// // linux.SYS_open_by_handle_at
+					// // TODO
+					// buf := make([]u8, 8192)
+					// pathlen, err := linux.readlink(
+					// 	fmt.ctprintf("/proc/self/fd/%i", event.fd),
+					// 	buf,
+					// )
+					// // log.info(
+					// // 	transmute(cstring)&buf[0], // fmt.ctprintf("/proc/self/fd/%i", event.fd),
+					// // )
+					// log.info(transmute(cstring)(&buf))
+					// if pathlen != -1 {
+
+					// }
+					}
+					if info.len < size_of(fanotify_event_info_header) {
+						log.warn("corrupted info?")
 						break
 					}
 					off += int(info.len)
-					info = cast(^fanotify_event_info_header)(uintptr(event) + uintptr(off))
 
-
-					log.info(info.info_type)
-					#partial switch info.info_type {
-					case .FAN_EVENT_INFO_TYPE_ERROR:
-						log.info("err")
-					case .FAN_EVENT_INFO_TYPE_FID:
-						fid := cast(^fanotify_event_info_fid)info
-						// fid.handle
-						// linux.SYS_open_by_handle_at
-						// TODO
-						buf := make([]u8, 8192)
-						pathlen, err := linux.readlink(
-							fmt.ctprint("/proc/self/fd/", event.fd, ""),
-							buf,
-						)
-						log.info(string(buf))
-						if pathlen != -1 {
-
-						}
-					}
 				}
 			}
 		} else {
@@ -140,6 +192,12 @@ _watch_worker :: proc(t: ^thread.Thread) {
 	log.debug("stopping watcher thread")
 }
 
+File_Handle :: struct #packed {
+	bytes: u32,
+	// TODO: type?
+	type:  i32,
+	// then handle_bytes follow
+}
 
 FAN_EVENT_NEXT :: proc(meta: ^fanotify_event_metadata, len: ^int) -> ^fanotify_event_metadata {
 	len^ -= int(meta.event_len)
@@ -150,6 +208,14 @@ FAN_EVENT_NEXT :: proc(meta: ^fanotify_event_metadata, len: ^int) -> ^fanotify_e
 FAN_EVENT_METADATA_LEN :: size_of(fanotify_event_metadata)
 
 FAN_EVENT_OK :: proc(meta: ^fanotify_event_metadata, len: int) -> bool {
+	// log.debug(
+	// 	i64(len),
+	// 	i64(FAN_EVENT_METADATA_LEN),
+	// 	i64(meta.event_len),
+	// 	i64(len) >= i64(FAN_EVENT_METADATA_LEN),
+	// 	i64(meta.event_len) >= i64(FAN_EVENT_METADATA_LEN),
+	// 	i64(meta.event_len) <= i64(len),
+	// )
 	return(
 		i64(len) >= i64(FAN_EVENT_METADATA_LEN) &&
 		i64(meta.event_len) >= i64(FAN_EVENT_METADATA_LEN) &&
@@ -169,21 +235,23 @@ FAN_UNLIMITED_MARKS: Fanotify_Flag = 0x00000020
 FAN_ENABLE_AUDIT: Fanotify_Flag = 0x00000040
 
 /* Report pidfd for event->pid */
-FAN_REPORT_PIDFD: Fanotify_Flag = 0x00000080
+FAN_REPORT_PIDFD: Fanotify_Flag : 0x00000080
 /* event->pid is thread id */
-FAN_REPORT_TID: Fanotify_Flag = 0x00000100
+FAN_REPORT_TID: Fanotify_Flag : 0x00000100
 /* Report unique file id */
-FAN_REPORT_FID: Fanotify_Flag = 0x00000200
+FAN_REPORT_FID: Fanotify_Flag : 0x00000200
 /* Report unique directory id */
-FAN_REPORT_DIR_FID: Fanotify_Flag = 0x00000400
+FAN_REPORT_DIR_FID: Fanotify_Flag : 0x00000400
 /* Report events with name */
-FAN_REPORT_NAME: Fanotify_Flag = 0x00000800
+FAN_REPORT_NAME: Fanotify_Flag : 0x00000800
 /* Report dirent target id  */
-FAN_REPORT_TARGET_FID: Fanotify_Flag = 0x00001000
+FAN_REPORT_TARGET_FID: Fanotify_Flag : 0x00001000
 /* event->fd can report error */
-FAN_REPORT_FD_ERROR: Fanotify_Flag = 0x00002000
+FAN_REPORT_FD_ERROR: Fanotify_Flag : 0x00002000
 /* Report mount events */
 FAN_REPORT_MNT: Fanotify_Flag = 0x00004000
+FAN_REPORT_DFID_NAME :: FAN_REPORT_DIR_FID | FAN_REPORT_NAME
+FAN_REPORT_DFID_NAME_TARGET :: FAN_REPORT_DFID_NAME | FAN_REPORT_FID | FAN_REPORT_TARGET_FID
 
 fanotify_init :: proc "contextless" (
 	flags: Fanotify_Flag,
@@ -196,62 +264,62 @@ fanotify_init :: proc "contextless" (
 	return errno_unwrap(ret, linux.Fd)
 }
 
-Fan_Event :: enum c.uint64_t {
-	/* File was accessed */
-	FAN_ACCESS         = 0x00000001,
-	/* File was modified */
-	FAN_MODIFY         = 0x00000002,
-	/* Metadata changed */
-	FAN_ATTRIB         = 0x00000004,
-	/* Writable file closed */
-	FAN_CLOSE_WRITE    = 0x00000008,
-	/* Unwritable file closed */
-	FAN_CLOSE_NOWRITE  = 0x00000010,
-	/* File was opened */
-	FAN_OPEN           = 0x00000020,
-	/* File was moved from X */
-	FAN_MOVED_FROM     = 0x00000040,
-	/* File was moved to Y */
-	FAN_MOVED_TO       = 0x00000080,
-	/* Subfile was created */
-	FAN_CREATE         = 0x00000100,
-	/* Subfile was deleted */
-	FAN_DELETE         = 0x00000200,
-	/* Self was deleted */
-	FAN_DELETE_SELF    = 0x00000400,
-	/* Self was moved */
-	FAN_MOVE_SELF      = 0x00000800,
-	/* File was opened for exec */
-	FAN_OPEN_EXEC      = 0x00001000,
+Fan_Event :: distinct c.uint64_t
+/* File was accessed */
+FAN_ACCESS: Fan_Event = 0x00000001
+/* File was modified */
+FAN_MODIFY: Fan_Event = 0x00000002
+/* Metadata changed */
+FAN_ATTRIB: Fan_Event = 0x00000004
+/* Writable file closed */
+FAN_CLOSE_WRITE: Fan_Event = 0x00000008
+/* Unwritable file closed */
+FAN_CLOSE_NOWRITE: Fan_Event = 0x00000010
+/* File was opened */
+FAN_OPEN: Fan_Event = 0x00000020
+/* File was moved from X */
+FAN_MOVED_FROM: Fan_Event = 0x00000040
+/* File was moved to Y */
+FAN_MOVED_TO: Fan_Event = 0x00000080
+/* Subfile was created */
+FAN_CREATE: Fan_Event = 0x00000100
+/* Subfile was deleted */
+FAN_DELETE: Fan_Event = 0x00000200
+/* Self was deleted */
+FAN_DELETE_SELF: Fan_Event = 0x00000400
+/* Self was moved */
+FAN_MOVE_SELF: Fan_Event = 0x00000800
+/* File was opened for exec */
+FAN_OPEN_EXEC: Fan_Event = 0x00001000
 
-	/* Event queued overflowed */
-	FAN_Q_OVERFLOW     = 0x00004000,
-	/* Filesystem error */
-	FAN_FS_ERROR       = 0x00008000,
+/* Event queued overflowed */
+FAN_Q_OVERFLOW: Fan_Event = 0x00004000
+/* Filesystem error */
+FAN_FS_ERROR: Fan_Event = 0x00008000
 
-	/* File open in perm check */
-	FAN_OPEN_PERM      = 0x00010000,
-	/* File accessed in perm check */
-	FAN_ACCESS_PERM    = 0x00020000,
-	/* File open/exec in perm check */
-	FAN_OPEN_EXEC_PERM = 0x00040000,
+/* File open in perm check */
+FAN_OPEN_PERM: Fan_Event = 0x00010000
+/* File accessed in perm check */
+FAN_ACCESS_PERM: Fan_Event = 0x00020000
+/* File open/exec in perm check */
+FAN_OPEN_EXEC_PERM: Fan_Event = 0x00040000
 
-	/* Pre-content access hook */
-	FAN_PRE_ACCESS     = 0x00100000,
-	/* Mount was attached */
-	FAN_MNT_ATTACH     = 0x01000000,
-	/* Mount was detached */
-	FAN_MNT_DETACH     = 0x02000000,
+/* Pre-content access hook */
+FAN_PRE_ACCESS: Fan_Event = 0x00100000
+/* Mount was attached */
+FAN_MNT_ATTACH: Fan_Event = 0x01000000
+/* Mount was detached */
+FAN_MNT_DETACH: Fan_Event = 0x02000000
 
-	/* Interested in child events */
-	FAN_EVENT_ON_CHILD = 0x08000000,
+/* Interested in child events */
+FAN_EVENT_ON_CHILD: Fan_Event = 0x08000000
 
-	/* File was renamed */
-	FAN_RENAME         = 0x10000000,
+/* File was renamed */
+FAN_RENAME: Fan_Event = 0x10000000
 
-	/* Event occurred against dir */
-	FAN_ONDIR          = 0x40000000,
-}
+/* Event occurred against dir */
+FAN_ONDIR: Fan_Event = 0x40000000
+
 
 Fanotify_Mark_Flags :: distinct c.uint
 
@@ -291,7 +359,7 @@ fanotify_mark :: proc "contextless" (
 }
 
 
-fanotify_event_metadata :: struct {
+fanotify_event_metadata :: struct #packed {
 	event_len:    u32,
 	vers:         u8,
 	reserved:     u8,
@@ -302,17 +370,19 @@ fanotify_event_metadata :: struct {
 	pid:          linux.Pid,
 }
 
-Fanotify_Event_Info_Type :: enum {
-	FAN_EVENT_INFO_TYPE_FID       = 1,
-	FAN_EVENT_INFO_TYPE_DFID_NAME = 2,
-	FAN_EVENT_INFO_TYPE_DFID      = 3,
-	FAN_EVENT_INFO_TYPE_PIDFD     = 4,
-	FAN_EVENT_INFO_TYPE_ERROR     = 5,
-	FAN_EVENT_INFO_TYPE_RANGE     = 6,
-	FAN_EVENT_INFO_TYPE_MNT       = 7,
+Fanotify_Event_Info_Type :: enum u8 {
+	FAN_EVENT_INFO_TYPE_FID           = 1,
+	FAN_EVENT_INFO_TYPE_DFID_NAME     = 2,
+	FAN_EVENT_INFO_TYPE_DFID          = 3,
+	FAN_EVENT_INFO_TYPE_PIDFD         = 4,
+	FAN_EVENT_INFO_TYPE_ERROR         = 5,
+	FAN_EVENT_INFO_TYPE_RANGE         = 6,
+	FAN_EVENT_INFO_TYPE_MNT           = 7,
+	FAN_EVENT_INFO_TYPE_OLD_DFID_NAME = 10,
+	FAN_EVENT_INFO_TYPE_NEW_DFID_NAME = 12,
 }
 
-fanotify_event_info_header :: struct {
+fanotify_event_info_header :: struct #packed {
 	info_type: Fanotify_Event_Info_Type,
 	pad:       u8,
 	len:       u16,
@@ -322,15 +392,13 @@ kernel_fsid_t :: struct {
 	val: [2]int,
 }
 
-fanotify_event_info_fid :: struct {
-	hdr:    fanotify_event_info_header,
-	fsid:   kernel_fsid_t,
+fanotify_event_info_fid :: struct #packed {
+	hdr:  fanotify_event_info_header,
+	fsid: kernel_fsid_t,
 	/*
 	 * Following is an opaque struct file_handle that can be passed as
 	 * an argument to open_by_handle_at(2).
 	 */
-	// TODO: unsigned char[] ?
-	handle: []c.char,
 }
 
 /*
