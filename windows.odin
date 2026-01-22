@@ -231,6 +231,7 @@ _watch_worker :: proc(t: ^thread.Thread) {
 			queue.pop_back(&msg_queue)
 		}
 
+		// TODO
 		when ODIN_OS == .Windows {
 			_handle_events(&fw_entry, &msg_buf, &msg_queue)
 		} else {

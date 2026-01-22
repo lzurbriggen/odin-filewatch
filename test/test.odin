@@ -8,7 +8,7 @@ import "core:testing"
 
 make_dir :: proc(dir: string) {
 	err := os2.remove_all(dir)
-	if err != nil {assert(err == nil)}
+	if err != nil && err != .Not_Exist {assert(err == nil)}
 	err = os2.make_directory(dir)
 	if err != nil {assert(err == nil)}
 }

@@ -91,13 +91,13 @@ watch_dir :: proc(
 	w.thread = t
 
 	log.info("worker starting")
-	for {
-		_, ok = chan.try_recv(w.status_chan)
-		if ok {
-			break
-		}
+	recv_val: bool
+	recv_val, ok = chan.recv(w.status_chan)
+	if !ok || !recv_val {
+		log.error("failed to start worker")
+		return
 	}
-	log.info("worker ready")
+	log.debug("worker ready")
 	return
 }
 

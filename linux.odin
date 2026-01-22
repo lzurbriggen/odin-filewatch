@@ -3,8 +3,10 @@ package fswatch
 
 import "core:c"
 import "core:container/queue"
+import "core:fmt"
 import "core:log"
 import "core:os"
+import "core:strings"
 import "core:sync/chan"
 import "core:sys/linux"
 import "core:thread"
@@ -16,22 +18,28 @@ _watch_worker :: proc(t: ^thread.Thread) {
 	msg_queue := queue.Queue(Msg){}
 	queue.init(&msg_queue)
 	defer queue.destroy(&msg_queue)
-	log.debug(thread_data.path)
+	// log.debug(thread_data.path)
 
-	fd, err := fanotify_init({.FAN_CLASS_NOTIF}, os.O_RDONLY)
+	log.debug("Fanotify init...")
+	fd, err := fanotify_init(FAN_CLASS_NOTIF | FAN_REPORT_FID, os.O_RDONLY)
 	if err != .NONE {
+		log.error(err)
+		chan.send(thread_data.status_chan, false)
 		return
 	}
 
+	log.debug("Fanotify mark...")
 	mark: int
 	mark, err = fanotify_mark(
 		fd,
 		FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
 		.FAN_FS_ERROR,
 		linux.AT_FDCWD,
-		"path",
+		strings.clone_to_cstring(thread_data.path),
 	)
 	if err != .NONE {
+		log.error(err)
+		chan.send(thread_data.status_chan, false)
 		return
 	}
 
@@ -42,6 +50,7 @@ _watch_worker :: proc(t: ^thread.Thread) {
 	// TODO: destroy proc
 	defer delete(msg_buf.messages)
 
+	log.info("send")
 	chan.send(thread_data.status_chan, true)
 
 	fan_buf := make([]u8, 8192)
@@ -93,7 +102,8 @@ _watch_worker :: proc(t: ^thread.Thread) {
 				// 	continue
 				// }
 
-				off = size_of(&event)
+				// TODO: size of ptr instead?
+				off = size_of(rawptr)
 				for {
 					if off >= int(event.event_len) {
 						break
@@ -101,15 +111,25 @@ _watch_worker :: proc(t: ^thread.Thread) {
 					off += int(info.len)
 					info = cast(^fanotify_event_info_header)(uintptr(event) + uintptr(off))
 
+
+					log.info(info.info_type)
 					#partial switch info.info_type {
 					case .FAN_EVENT_INFO_TYPE_ERROR:
+						log.info("err")
 					case .FAN_EVENT_INFO_TYPE_FID:
 						fid := cast(^fanotify_event_info_fid)info
 						// fid.handle
 						// linux.SYS_open_by_handle_at
 						// TODO
 						buf := make([]u8, 8192)
-					// rc, err := linux.readlink("/proc/self/fd/" + event.fd, buf)
+						pathlen, err := linux.readlink(
+							fmt.ctprint("/proc/self/fd/", event.fd, ""),
+							buf,
+						)
+						log.info(string(buf))
+						if pathlen != -1 {
+
+						}
 					}
 				}
 			}
@@ -137,39 +157,36 @@ FAN_EVENT_OK :: proc(meta: ^fanotify_event_metadata, len: int) -> bool {
 	)
 }
 
-Fanotify_Flag :: enum c.uint64_t {
-	FAN_CLOEXEC           = 0x00000001,
-	FAN_NONBLOCK          = 0x00000002,
-	FAN_CLASS_NOTIF       = 0x00000000,
-	FAN_CLASS_CONTENT     = 0x00000004,
-	FAN_CLASS_PRE_CONTENT = 0x00000008,
-	FAN_UNLIMITED_QUEUE   = 0x00000010,
-	FAN_UNLIMITED_MARKS   = 0x00000020,
-	FAN_ENABLE_AUDIT      = 0x00000040,
-}
-Fanotify_Flags :: bit_set[Fanotify_Flag]
+Fanotify_Flag :: distinct c.int
 
-Fanotify_Event_Format :: enum c.uint64_t {
-	/* Report pidfd for event->pid */
-	FAN_REPORT_PIDFD      = 0x00000080,
-	/* event->pid is thread id */
-	FAN_REPORT_TID        = 0x00000100,
-	/* Report unique file id */
-	FAN_REPORT_FID        = 0x00000200,
-	/* Report unique directory id */
-	FAN_REPORT_DIR_FID    = 0x00000400,
-	/* Report events with name */
-	FAN_REPORT_NAME       = 0x00000800,
-	/* Report dirent target id  */
-	FAN_REPORT_TARGET_FID = 0x00001000,
-	/* event->fd can report error */
-	FAN_REPORT_FD_ERROR   = 0x00002000,
-	/* Report mount events */
-	FAN_REPORT_MNT        = 0x00004000,
-}
+FAN_CLOEXEC: Fanotify_Flag = 0x00000001
+FAN_NONBLOCK: Fanotify_Flag = 0x00000002
+FAN_CLASS_NOTIF: Fanotify_Flag = 0x00000000
+FAN_CLASS_CONTENT: Fanotify_Flag = 0x00000004
+FAN_CLASS_PRE_CONTENT: Fanotify_Flag = 0x00000008
+FAN_UNLIMITED_QUEUE: Fanotify_Flag = 0x00000010
+FAN_UNLIMITED_MARKS: Fanotify_Flag = 0x00000020
+FAN_ENABLE_AUDIT: Fanotify_Flag = 0x00000040
+
+/* Report pidfd for event->pid */
+FAN_REPORT_PIDFD: Fanotify_Flag = 0x00000080
+/* event->pid is thread id */
+FAN_REPORT_TID: Fanotify_Flag = 0x00000100
+/* Report unique file id */
+FAN_REPORT_FID: Fanotify_Flag = 0x00000200
+/* Report unique directory id */
+FAN_REPORT_DIR_FID: Fanotify_Flag = 0x00000400
+/* Report events with name */
+FAN_REPORT_NAME: Fanotify_Flag = 0x00000800
+/* Report dirent target id  */
+FAN_REPORT_TARGET_FID: Fanotify_Flag = 0x00001000
+/* event->fd can report error */
+FAN_REPORT_FD_ERROR: Fanotify_Flag = 0x00002000
+/* Report mount events */
+FAN_REPORT_MNT: Fanotify_Flag = 0x00004000
 
 fanotify_init :: proc "contextless" (
-	flags: Fanotify_Flags,
+	flags: Fanotify_Flag,
 	event_f_flags: uint,
 ) -> (
 	linux.Fd,
@@ -236,7 +253,7 @@ Fan_Event :: enum c.uint64_t {
 	FAN_ONDIR          = 0x40000000,
 }
 
-Fanotify_Mark_Flags :: distinct u64
+Fanotify_Mark_Flags :: distinct c.uint
 
 FAN_MARK_ADD: Fanotify_Mark_Flags = 0x00000001
 FAN_MARK_REMOVE: Fanotify_Mark_Flags = 0x00000002
@@ -262,7 +279,14 @@ fanotify_mark :: proc "contextless" (
 	int,
 	linux.Errno,
 ) {
-	ret := linux.syscall(linux.SYS_fanotify_mark, fanotify_fd, flags, mask, dirfd, pathname)
+	ret := linux.syscall(
+		linux.SYS_fanotify_mark,
+		c.int(fanotify_fd),
+		c.uint(flags),
+		c.uint64_t(mask),
+		c.int(dirfd),
+		uintptr(rawptr(pathname)),
+	)
 	return errno_unwrap(ret, int)
 }
 
