@@ -100,7 +100,7 @@ non_recursive :: proc(t: ^testing.T) {
 		if chan.is_closed(w.chan) {
 			break
 		}
-		if data, ok := chan.try_recv(w.chan); ok {
+		if data, ok := chan.recv(w.chan); ok {
 			msgs[i] = data
 			s += 1
 			log.info("Event received:", data)

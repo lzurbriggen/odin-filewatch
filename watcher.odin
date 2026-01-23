@@ -1,7 +1,6 @@
 package fswatch
 
 import "base:runtime"
-import "core:container/queue"
 import "core:fmt"
 import "core:log"
 import "core:mem/virtual"
@@ -26,7 +25,7 @@ _Worker :: struct {
 _Worker_Data :: struct {
 	status_chan:   chan.Chan(bool),
 	chan:          _Msg_Chan,
-	debounce_time: time.Duration,
+	throttle_time: time.Duration,
 	path:          string,
 	recursive:     bool,
 }
@@ -77,7 +76,7 @@ watch_dir :: proc(
 		data = {
 			path = abs_path,
 			chan = watcher.chan,
-			debounce_time = debounce_time,
+			throttle_time = debounce_time,
 			status_chan = status_chan,
 			recursive = recursive,
 		},

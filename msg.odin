@@ -1,6 +1,7 @@
 package fswatch
 
 import "core:container/queue"
+import "core:log"
 import "core:sync/chan"
 import "core:time"
 
@@ -28,20 +29,23 @@ File_Renamed :: struct {
 }
 
 Msg_Buffer :: struct {
-	debounce_time: time.Duration,
-	messages:      map[Msg]time.Time,
+	throttle_time:  time.Duration,
+	last_sent_time: time.Time,
+	messages:       [dynamic]Msg,
 }
 
 _push_message :: proc(buf: ^Msg_Buffer, msg: Msg) {
-	buf.messages[msg] = time.now()
+	append(&buf.messages, msg)
 }
 
 _tick :: proc(buf: ^Msg_Buffer, msg_queue: ^queue.Queue(Msg)) {
-	for msg, last_received_time in buf.messages {
-		if time.diff(last_received_time, time.now()) >= buf.debounce_time {
+	if time.diff(buf.last_sent_time, time.now()) >= buf.throttle_time {
+		buf.last_sent_time = time.now()
+		for msg, i in buf.messages {
+			log.warn(msg, i)
 			queue.push(msg_queue, msg)
-			delete_key(&buf.messages, msg)
 		}
+		clear(&buf.messages)
 	}
 }
 

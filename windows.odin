@@ -203,7 +203,7 @@ _watch_worker :: proc(t: ^thread.Thread) {
 	defer windows.CloseHandle(fw_entry.handle)
 
 	msg_buf := Msg_Buffer {
-		debounce_time = thread_data.debounce_time,
+		debounce_time = thread_data.throttle_time,
 	}
 	// TODO: destroy proc
 	defer delete(msg_buf.messages)
@@ -217,18 +217,15 @@ _watch_worker :: proc(t: ^thread.Thread) {
 
 		_tick(&msg_buf, &msg_queue)
 		for queue.len(msg_queue) > 0 {
-			msg := queue.back_ptr(&msg_queue)
-			if msg == nil {
-				break
-			}
+			msg := queue.front_ptr(&msg_queue)
 			if msg == nil {
 				break
 			}
 			ok := chan.try_send(channel, msg^)
 			if !ok {
-				break
+				continue
 			}
-			queue.pop_back(&msg_queue)
+			queue.pop_front(&msg_queue)
 		}
 
 		// TODO

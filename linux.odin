@@ -3,11 +3,9 @@ package fswatch
 
 import "core:c"
 import "core:container/queue"
-import "core:fmt"
 import "core:hash"
 import "core:log"
 import "core:mem"
-import "core:os"
 import "core:os/os2"
 import "core:path/filepath"
 import "core:strings"
@@ -28,20 +26,10 @@ Dir_Id :: struct {
 }
 
 watch_add :: proc(state: ^Worker_State, path: string) {
-	log.debug("Watch:", path)
 	wd, err := linux.inotify_add_watch(
 		state.inotify_fd,
 		strings.clone_to_cstring(path),
-		{
-			.MODIFY,
-			.CREATE,
-			.DELETE,
-			.MOVED_FROM,
-			.MOVED_TO,
-			.DONT_FOLLOW,
-			.DELETE_SELF,
-			.MOVE_SELF,
-		},
+		{.CREATE, .CLOSE_WRITE, .DELETE, .MOVED_FROM, .MOVED_TO, .DONT_FOLLOW},
 	)
 	if err != nil {
 		log.error(err)
@@ -98,7 +86,6 @@ _watch_worker :: proc(t: ^thread.Thread) {
 	msg_queue := queue.Queue(Msg){}
 	queue.init(&msg_queue)
 	defer queue.destroy(&msg_queue)
-	// log.debug(thread_data.path)
 
 	log.debug("Inotify init...")
 	inotify_fd, err := linux.inotify_init1({.NONBLOCK})
@@ -110,14 +97,13 @@ _watch_worker :: proc(t: ^thread.Thread) {
 
 	state := Worker_State {
 		root_path  = thread_data.path,
-		// dir_paths  = make(map[Dir_Id]string),
 		inotify_fd = inotify_fd,
 	}
 
 	walk_dir(&state, thread_data.path)
 
 	msg_buf := Msg_Buffer {
-		debounce_time = thread_data.debounce_time,
+		throttle_time = thread_data.throttle_time,
 	}
 	// TODO: destroy proc
 	defer delete(msg_buf.messages)
@@ -133,10 +119,7 @@ _watch_worker :: proc(t: ^thread.Thread) {
 
 		_tick(&msg_buf, &msg_queue)
 		for queue.len(msg_queue) > 0 {
-			msg := queue.back_ptr(&msg_queue)
-			if msg == nil {
-				break
-			}
+			msg := queue.front_ptr(&msg_queue)
 			if msg == nil {
 				break
 			}
@@ -144,7 +127,7 @@ _watch_worker :: proc(t: ^thread.Thread) {
 			if !ok {
 				break
 			}
-			queue.pop_back(&msg_queue)
+			queue.pop_front(&msg_queue)
 		}
 
 		/* for select() */
@@ -209,18 +192,8 @@ _watch_worker :: proc(t: ^thread.Thread) {
 			}
 			i := 0
 			for i < evs_len {
-				log.info(evs_len, i)
 				event := cast(^linux.Inotify_Event)&read_buf[i]
 				defer i += size_of(linux.Inotify_Event) + int(event.len)
-
-				// len, err := linux.read(state.inotify_fd, read_buf)
-				// if err != nil && err != .EAGAIN {
-				// 	log.error(err)
-				// 	continue
-				// }
-				// if len <= 0 {
-				// 	continue
-				// }
 
 				name_ptr := cast([^]u8)(&event.name)
 				name := cast(cstring)name_ptr
@@ -237,31 +210,38 @@ _watch_worker :: proc(t: ^thread.Thread) {
 					log.error("Not able to build relative path", rel_path, rerr)
 					continue
 				}
-				log.info(name, path, rel_path, event.mask)
+				// log.info(name, path, rel_path, event.mask)
 				// TODO: clean up
-				if .CREATE in event.mask {
+				if .IGNORED in event.mask {
+					// watch_remove(&state, event.wd)
+				} else if .CREATE in event.mask {
 					_push_message(&msg_buf, File_Created{path = rel_path})
-					watch_add(&state, path)
 					// TODO: walk new dir and push created messages for files
 					if .ISDIR in event.mask {
+						watch_add(&state, path)
 						walker := os2.walker_create(path)
 						defer os2.walker_destroy(&walker)
 						log.debug("Walking new dir", path)
 						for fi in os2.walker_walk(&walker) {
 							log.debug("File in created dir found", fi.fullpath)
 							// TODO: rel path
-							rel_path, rerr := filepath.rel(state.root_path, fi.fullpath)
+							file_rel_path, rerr := filepath.rel(state.root_path, fi.fullpath)
 							if rerr != nil {
 								log.error("Not able to build relative path", fi.fullpath, rerr)
 								continue
 							}
-							_push_message(&msg_buf, File_Created{path = rel_path})
+							_push_message(&msg_buf, File_Created{path = file_rel_path})
+							if fi.type == .Directory {
+								watch_add(&state, fi.fullpath)
+							}
 						}
 					}
 				} else if .DELETE in event.mask || .DELETE_SELF in event.mask {
 					_push_message(&msg_buf, File_Removed{path = rel_path})
-					// watch_remove(&state, event.wd)
-				} else if .MODIFY in event.mask {
+					if .ISDIR in event.mask {
+						watch_remove(&state, event.wd)
+					}
+				} else if .CLOSE_WRITE in event.mask {
 					_push_message(&msg_buf, File_Modified{path = rel_path})
 				} else {
 					log.warn("unhandled", event)
@@ -332,7 +312,6 @@ O_PATH :: 020000000
 
 File_Handle :: struct #packed {
 	bytes: u32,
-	// TODO: type?
 	type:  i32,
 	// then handle_bytes follow
 }
