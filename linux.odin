@@ -16,8 +16,10 @@ import "core:sys/linux"
 import "core:thread"
 
 Worker_State :: struct {
-	root_path: cstring,
-	dir_paths: map[Dir_Id]string,
+	root_path:  string,
+	watches:    map[linux.Wd]string,
+	inotify_fd: linux.Fd,
+	ev_queue:   queue.Queue(^linux.Inotify_Event),
 }
 
 Dir_Id :: struct {
@@ -25,50 +27,84 @@ Dir_Id :: struct {
 	handle_hash: u64,
 }
 
-walk_dir :: proc(state: ^Worker_State, dir: ^os2.File, path_rel: string) {
+watch_add :: proc(state: ^Worker_State, path: string) {
+	log.debug("Watch:", path)
+	wd, err := linux.inotify_add_watch(
+		state.inotify_fd,
+		strings.clone_to_cstring(path),
+		{
+			.MODIFY,
+			.CREATE,
+			.DELETE,
+			.MOVED_FROM,
+			.MOVED_TO,
+			.DONT_FOLLOW,
+			.DELETE_SELF,
+			.MOVE_SELF,
+		},
+	)
+	if err != nil {
+		log.error(err)
+		return
+	}
+	map_insert(&state.watches, wd, path)
+}
+
+watch_remove :: proc(state: ^Worker_State, wd: linux.Wd) {
+	delete_key(&state.watches, wd)
+}
+
+walk_dir :: proc(state: ^Worker_State, path_rel: string) {
 	// TODO: n?
-	fis, err := os2.read_dir(dir, 1000, allocator = context.allocator)
+	// fis, err := os2.read_dir(dir, 1000, allocator = context.allocator)
+
+	watch_add(state, path_rel)
+
 	walker := os2.walker_create(path_rel)
 	for fi in os2.walker_walk(&walker) {
-		if fi.name == "." || fi.name == ".." {
-			continue
-		}
-		if fi.type != .Directory {
-			continue
-		}
+		// if fi.name == "." || fi.name == ".." {
+		// 	continue
+		// }
+		// if fi.type != .Directory {
+		// 	continue
+		// }
 
-		parent_path := filepath.dir(fi.fullpath)
-		parent_fd, cerr := linux.open(strings.clone_to_cstring(parent_path), {.PATH})
-		if cerr != nil {
-			log.error("err in open", cerr)
-			return
-		}
-		log.info(parent_fd, parent_path, fi.name)
 
-		{
-			fsid: kernel_fsid_t
-			MAX_HANDLE_SIZE :: 128
-			buf := make([]u8, MAX_HANDLE_SIZE)
-			handle := cast(^File_Handle)&buf[0]
-			handle.bytes = u32(len(buf) - size_of(File_Handle))
-			_, err := name_to_handle_at(
-				parent_fd,
-				strings.clone_to_cstring(fi.name),
-				handle,
-				&fsid,
-				0,
-			)
-			if err != nil {
-				log.error("name_to_handle_at failed", err)
-				continue
-			}
-			log.info(handle, fi.fullpath)
-			map_insert(
-				&state.dir_paths,
-				Dir_Id{fsid = fsid, handle_hash = file_handle_hash(handle)},
-				fi.fullpath,
-			)
-		}
+		log.info(fi, fi.fullpath)
+		watch_add(state, fi.fullpath)
+
+		// parent_path := filepath.dir(fi.fullpath)
+		// parent_fd, cerr := linux.open(strings.clone_to_cstring(parent_path), {.PATH})
+		// if cerr != nil {
+		// 	log.error("err in open", cerr)
+		// 	return
+		// }
+		// log.info(parent_fd, parent_path, fi.name)
+
+		// {
+		// 	fsid: kernel_fsid_t
+		// 	MAX_HANDLE_SIZE :: 128
+		// 	buf := make([]u8, MAX_HANDLE_SIZE)
+		// 	handle := cast(^File_Handle)&buf[0]
+		// 	handle.bytes = u32(len(buf) - size_of(File_Handle))
+		// 	_, err := name_to_handle_at(
+		// 		parent_fd,
+		// 		strings.clone_to_cstring(fi.name),
+		// 		handle,
+		// 		&fsid,
+		// 		0,
+		// 	)
+		// 	if err != nil {
+		// 		log.error("name_to_handle_at failed", err)
+		// 		continue
+		// 	}
+		// 	log.info(handle, fi.fullpath)
+		// 	map_insert(
+		// 		&state.dir_paths,
+		// 		Dir_Id{fsid = fsid, handle_hash = file_handle_hash(handle)},
+		// 		fi.fullpath,
+		// 	)
+		// }
 	}
 }
 
@@ -109,11 +145,8 @@ _watch_worker :: proc(t: ^thread.Thread) {
 	defer queue.destroy(&msg_queue)
 	// log.debug(thread_data.path)
 
-	log.debug("Fanotify init...")
-	fd, err := fanotify_init(
-		FAN_CLASS_NOTIF | FAN_REPORT_FID | FAN_REPORT_DIR_FID | FAN_REPORT_DFID_NAME,
-		os.O_RDONLY,
-	)
+	log.debug("Inotify init...")
+	inotify_fd, err := linux.inotify_init1({})
 	if err != .NONE {
 		log.error(err)
 		chan.send(thread_data.status_chan, false)
@@ -121,73 +154,12 @@ _watch_worker :: proc(t: ^thread.Thread) {
 	}
 
 	state := Worker_State {
-		root_path = strings.clone_to_cstring(thread_data.path),
-		dir_paths = make(map[Dir_Id]string),
+		root_path  = thread_data.path,
+		// dir_paths  = make(map[Dir_Id]string),
+		inotify_fd = inotify_fd,
 	}
 
-	// state.dir_paths[] = ""
-	// mount_fd: kernel_fsid_t
-	{
-		// {
-		// 	buf := make([]u8, 512)
-		// 	handle := cast(^File_Handle)&buf[0]
-		// 	handle.bytes = u32(len(buf) - size_of(File_Handle))
-
-		// 	// fsid: kernel_fsid_t
-
-		// 	root_fd, err := linux.open(state.root_path, {.PATH, .CLOEXEC})
-		// 	if err != nil {
-		// 		fmt.println("root_fd failed:", err)
-		// 		return
-		// 	}
-
-		// 	ret, nerr := name_to_handle_at(
-		// 		root_fd,
-		// 		strings.clone_to_cstring("."),
-		// 		handle,
-		// 		&mount_fd,
-		// 		0,
-		// 	)
-		// 	if ret != 0 {
-		// 		fmt.println("name_to_handle_at failed:", nerr)
-		// 		return
-		// 	}
-		// }
-
-		dir, err := os2.open(thread_data.path)
-
-		if err != nil {
-			log.error("failed to open", err)
-		}
-		// mount_fd = linux.Fd(os2.fd(dir))
-		walk_dir(&state, dir, thread_data.path)
-		// log.info(state.dir_paths)
-
-		log.info("logging dir_paths")
-		for k, v in state.dir_paths {
-			log.info(k, v)
-		}
-
-	}
-
-	log.debug("Fanotify mark...")
-	mark: int
-	mask := FAN_MODIFY | FAN_DELETE | FAN_CREATE | FAN_ONDIR | FAN_ATTRIB
-	if thread_data.recursive {
-		mask |= FAN_EVENT_ON_CHILD
-	}
-	mark, err = fanotify_mark(
-		fd,
-		FAN_MARK_ADD,
-		mask,
-		linux.AT_FDCWD,
-		strings.clone_to_cstring(thread_data.path),
-	)
-	if err != .NONE {
-		log.error(err)
-		chan.send(thread_data.status_chan, false)
-		return
-	}
+	walk_dir(&state, thread_data.path)
 
 	msg_buf := Msg_Buffer {
 		debounce_time = thread_data.debounce_time,
@@ -222,109 +194,51 @@ _watch_worker :: proc(t: ^thread.Thread) {
 
 		// TODO
 		when ODIN_OS == .Linux {
-			res, err := linux.read(fd, fan_buf)
-			if err != .NONE {
-				log.error("Error when reading fanotify buffer:", err)
-				// TODO
+			// offset :=
+			// for offset < avail {
+
+
+			NAME_MAX :: 128
+			MAX_BUF_SIZE :: size_of(linux.Inotify_Event) + NAME_MAX + 1
+			read_buf := make([]u8, MAX_BUF_SIZE)
+			defer delete(read_buf)
+			len, err := linux.read(state.inotify_fd, read_buf)
+			if err != nil && err != .EAGAIN {
+				log.error(err)
+				continue
 			}
-			event := cast(^fanotify_event_metadata)&fan_buf[0]
-
-			off: int
-			curr_len := res
-			for FAN_EVENT_OK(event, curr_len) {
-				// TODO: log
-				// if event.mask != FAN_FS_ERROR {
-				// 	continue
-				// }
-				// if event.fd != FAN_NOFD {
-				// 	continue
-				// }
-
-				// TODO: size of ptr instead?
-				off = size_of(fanotify_event_metadata)
-				for off < int(event.event_len) {
-					info := cast(^fanotify_event_info_header)(uintptr(event) + uintptr(off))
-
-					if info.len < size_of(fanotify_event_info_header) {
-						log.warn("corrupted info?")
-						break
-					}
-
-					// log.info(info)
-
-					is_dir := event.mask & FAN_ONDIR != 0
-
-					#partial switch info.info_type {
-					case .FAN_EVENT_INFO_TYPE_DFID_NAME:
-						fid := cast(^fanotify_event_info_fid)info
-
-						parent_fh, name, ok := extract_dfid_name(event, info)
-						if ok {
-
-							parent_id := Dir_Id {
-								fsid        = fid.fsid,
-								handle_hash = file_handle_hash(parent_fh),
-							}
-							log.info(parent_id, parent_fh, name)
-
-							// log.info(parent_id)
-							parent_path, exists := state.dir_paths[parent_id]
-							if !exists {
-								parent_path = "."
-								log.warn("parent not in map:", name)
-							}
-
-							full_path := fmt.tprintf("%s/%s", parent_path, name)
-							log.info("Full path:", full_path)
-						}
-
-					// // event_end := uintptr(event) + uintptr(event.event_len)
-					// if uintptr(name_ptr) < event_end {
-					// 	name := transmute(cstring)(cast(^u8)name_ptr)
-
-					// 	// TODO: i think i get it now. we cache the dir structure by mapping fds to paths by walking the tree before emitting events.
-					// 	parent_path, ok :=
-					// 		state.dir_paths[Dir_Id{fsid = fid.fsid, handle_hash = file_handle_hash(parent_fh)}]
-					// 	if !ok {
-					// 		log.warn("parent not in map", name)
-					// 	}
-					// 	path := fmt.tprintf("%s/%s", parent_path, name)
-					// 	// path := strings.clone_from_cstring(name)
-					// 	log.info(path)
-					// 	switch {
-					// 	case event.mask & FAN_CREATE != 0:
-					// 		_push_message(&msg_buf, File_Created{path = path})
-					// 	case event.mask & FAN_DELETE != 0:
-					// 		_push_message(
-					// 			&msg_buf,
-					// 			File_Removed{path = strings.clone_from_cstring(name)},
-					// 		)
-					// 	case event.mask & FAN_MODIFY != 0:
-					// 		_push_message(
-					// 			&msg_buf,
-					// 			File_Modified{path = strings.clone_from_cstring(name)},
-					// 		)
-					// 	case event.mask & FAN_RENAME != 0:
-					// 	// _push_message(
-					// 	// 	&msg_buf,
-					// 	// 	File_Renamed{path = strings.clone_from_cstring(name)},
-					// 	// )
-					// 	}
-					// } else {
-					// 	log.warn("DFID_NAME missing (flag?)")
-					// }
-					}
-					if info.len < size_of(fanotify_event_info_header) {
-						log.warn("corrupted info?")
-						break
-					}
-					off += int(info.len)
-
-				}
-				event = FAN_EVENT_NEXT(event, &curr_len)
+			if len <= 0 {
+				continue
 			}
-		} else {
-			panic("only Windows is supported at the moment")
+
+
+			event := cast(^linux.Inotify_Event)&read_buf[0]
+			name_ptr := cast([^]u8)(&event.name)
+			name := cast(cstring)name_ptr
+			path, ok := state.watches[event.wd]
+			if !ok {
+				log.warn("Wd not in watches:", event.wd, name)
+				continue
+			}
+			path = filepath.join({path, strings.clone_from_cstring_bounded(name, int(event.len))})
+			rel_path, rerr := filepath.rel(state.root_path, path)
+			if rerr != nil {
+				log.error("Not able to make relative path", rel_path, rerr)
+				continue
+			}
+			switch event.mask {
+			case {.CREATE}:
+				_push_message(&msg_buf, File_Created{path = rel_path})
+				watch_add(&state, path)
+			case {.DELETE}:
+				_push_message(&msg_buf, File_Removed{path = rel_path})
+				watch_remove(&state, event.wd)
+			case {.MODIFY}:
+				_push_message(&msg_buf, File_Modified{path = rel_path})
+			case:
+				log.warn("unhandled", event)
+			}
+
 		}
 	}
 	log.debug("stopping watcher thread")

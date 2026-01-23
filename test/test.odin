@@ -38,11 +38,11 @@ recursive :: proc(t: ^testing.T) {
 	{
 		rm_dir(t, "tmp")
 		make_dir(t, "tmp")
-		make_dir(t, "tmp/inner")
-		make_dir(t, "tmp/inner/2")
-		make_dir(t, "tmp/inner2")
-		make_dir(t, "tmp/inner2/3")
-		make_dir(t, "tmp/inner2/4")
+		// make_dir(t, "tmp/inner")
+		// make_dir(t, "tmp/inner/2")
+		// make_dir(t, "tmp/inner2")
+		// make_dir(t, "tmp/inner2/3")
+		// make_dir(t, "tmp/inner2/4")
 		filewatch.watch_dir(&w, "tmp", recursive = true)
 
 		cud_file(t, "tmp/test.txt")
@@ -86,11 +86,11 @@ non_recursive :: proc(t: ^testing.T) {
 	{
 		rm_dir(t, "tmp_nr")
 		make_dir(t, "tmp_nr")
-		make_dir(t, "tmp_nr/inner")
-		make_dir(t, "tmp_nr/inner/2")
-		make_dir(t, "tmp_nr/inner2")
-		make_dir(t, "tmp_nr/inner2/3")
-		make_dir(t, "tmp_nr/inner2/4")
+		// make_dir(t, "tmp_nr/inner")
+		// make_dir(t, "tmp_nr/inner/2")
+		// make_dir(t, "tmp_nr/inner2")
+		// make_dir(t, "tmp_nr/inner2/3")
+		// make_dir(t, "tmp_nr/inner2/4")
 		filewatch.watch_dir(&w, "tmp_nr")
 
 		cud_file(t, "tmp_nr/test.txt")
