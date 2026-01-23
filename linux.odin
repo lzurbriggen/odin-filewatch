@@ -21,7 +21,6 @@ _watch_worker :: proc(t: ^thread.Thread) {
 	// log.debug(thread_data.path)
 
 	log.debug("Fanotify init...")
-	// TODO: O_LARGEFILE?
 	fd, err := fanotify_init(
 		FAN_CLASS_NOTIF | FAN_REPORT_FID | FAN_REPORT_DIR_FID | FAN_REPORT_DFID_NAME,
 		os.O_RDONLY,
@@ -34,7 +33,6 @@ _watch_worker :: proc(t: ^thread.Thread) {
 
 	log.debug("Fanotify mark...")
 	mark: int
-
 	mask := FAN_MODIFY | FAN_DELETE | FAN_CREATE | FAN_ONDIR | FAN_ATTRIB
 	if thread_data.recursive {
 		mask |= FAN_EVENT_ON_CHILD
@@ -95,7 +93,6 @@ _watch_worker :: proc(t: ^thread.Thread) {
 			off: int
 			curr_len := res
 			for FAN_EVENT_OK(event, curr_len) {
-				defer event = FAN_EVENT_NEXT(event, &curr_len)
 				// TODO: log
 				// if event.mask != FAN_FS_ERROR {
 				// 	continue
@@ -109,7 +106,14 @@ _watch_worker :: proc(t: ^thread.Thread) {
 				for off < int(event.event_len) {
 					info := cast(^fanotify_event_info_header)(uintptr(event) + uintptr(off))
 
+					if info.len < size_of(fanotify_event_info_header) {
+						log.warn("corrupted info?")
+						break
+					}
+
 					log.info(info)
+
+					is_dir := event.mask & FAN_ONDIR != 0
 
 					#partial switch info.info_type {
 					case .FAN_EVENT_INFO_TYPE_DFID_NAME:
@@ -118,8 +122,38 @@ _watch_worker :: proc(t: ^thread.Thread) {
 						str_ptr := cast(^u8)(uintptr(fh) +
 							size_of(File_Handle) +
 							uintptr(fh.bytes))
-						name := transmute(cstring)str_ptr
-						log.info("name", name)
+						// TODO: check bounds
+						// name := transmute(cstring)str_ptr
+						// log.info("name", name)
+						event_end := uintptr(event) + uintptr(event.event_len)
+						if uintptr(str_ptr) < event_end {
+							name := transmute(cstring)(cast(^u8)str_ptr)
+							log.info("name", name)
+
+							// TODO: i think i get it now. we cache the dir structure by mapping fds to paths by walking the tree before emitting events.
+							path := strings.clone_from_cstring(name)
+							switch {
+							case event.mask & FAN_CREATE != 0:
+								_push_message(&msg_buf, File_Created{path = path})
+							case event.mask & FAN_DELETE != 0:
+								_push_message(
+									&msg_buf,
+									File_Removed{path = strings.clone_from_cstring(name)},
+								)
+							case event.mask & FAN_MODIFY != 0:
+								_push_message(
+									&msg_buf,
+									File_Modified{path = strings.clone_from_cstring(name)},
+								)
+							case event.mask & FAN_RENAME != 0:
+							// _push_message(
+							// 	&msg_buf,
+							// 	File_Renamed{path = strings.clone_from_cstring(name)},
+							// )
+							}
+						} else {
+							log.warn("DFID_NAME missing (flag?)")
+						}
 					case .FAN_EVENT_INFO_TYPE_DFID:
 					// fid := cast(^fanotify_event_info_fid)info
 
@@ -184,6 +218,7 @@ _watch_worker :: proc(t: ^thread.Thread) {
 					off += int(info.len)
 
 				}
+				event = FAN_EVENT_NEXT(event, &curr_len)
 			}
 		} else {
 			panic("only Windows is supported at the moment")
@@ -191,6 +226,29 @@ _watch_worker :: proc(t: ^thread.Thread) {
 	}
 	log.debug("stopping watcher thread")
 }
+
+O_APPEND :: 000000010
+/* not fcntl */
+O_CREAT :: 000000400
+/* not fcntl */
+O_EXCL :: 000002000
+O_LARGEFILE :: 000004000
+__O_SYNC :: 000100000
+O_SYNC :: (__O_SYNC | O_DSYNC)
+O_NONBLOCK :: 000200000
+/* not fcntl */
+O_NOCTTY :: 000400000
+O_DSYNC :: 001000000
+O_NOATIME :: 004000000
+/* set close_on_exec */
+O_CLOEXEC :: 010000000
+
+/* must be a directory */
+O_DIRECTORY :: 000010000
+/* don't follow links */
+O_NOFOLLOW :: 000000200
+
+O_PATH :: 020000000
 
 File_Handle :: struct #packed {
 	bytes: u32,
@@ -365,7 +423,7 @@ fanotify_event_metadata :: struct #packed {
 	reserved:     u8,
 	metadata_len: u16,
 	// TODO: 8-byte alignment relevant? original type is: aligned_u64
-	mask:         u64,
+	mask:         Fan_Event,
 	fd:           linux.Fd,
 	pid:          linux.Pid,
 }
@@ -388,8 +446,8 @@ fanotify_event_info_header :: struct #packed {
 	len:       u16,
 }
 
-kernel_fsid_t :: struct {
-	val: [2]int,
+kernel_fsid_t :: struct #packed {
+	val: [2]c.int,
 }
 
 fanotify_event_info_fid :: struct #packed {
