@@ -7,5 +7,5 @@ tasks:
 
   test:
     cmds:
-      - cmd: odin test ./test -debug
+      - cmd: odin test ./test -debug -thread-count:1
 

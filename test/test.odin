@@ -6,24 +6,27 @@ import "core:os/os2"
 import "core:sync/chan"
 import "core:testing"
 
-make_dir :: proc(dir: string) {
+rm_dir :: proc(t: ^testing.T, dir: string) {
 	err := os2.remove_all(dir)
-	if err != nil && err != .Not_Exist {assert(err == nil)}
-	err = os2.make_directory(dir)
-	if err != nil {assert(err == nil)}
+	testing.expect_value(t, err, nil)
 }
-cud_file :: proc(path: string) {
+
+make_dir :: proc(t: ^testing.T, dir: string) {
+	err := os2.make_directory(dir)
+	testing.expect_value(t, err, nil)
+}
+cud_file :: proc(t: ^testing.T, path: string) {
 	f, err := os2.create(path)
 	if err != nil {assert(err == nil)}
 	os2.flush(f)
 	_, err = os2.write_string(f, "foo")
-	if err != nil {assert(err == nil)}
+	testing.expect_value(t, err, nil)
 	err = os2.flush(f)
-	if err != nil {assert(err == nil)}
+	testing.expect_value(t, err, nil)
 	err = os2.close(f)
-	if err != nil {assert(err == nil)}
+	testing.expect_value(t, err, nil)
 	err = os2.remove(path)
-	if err != nil {assert(err == nil)}
+	testing.expect_value(t, err, nil)
 }
 
 @(test)
@@ -33,12 +36,18 @@ recursive :: proc(t: ^testing.T) {
 	defer filewatch.destroy(&w)
 
 	{
-		make_dir("tmp")
+		rm_dir(t, "tmp")
+		make_dir(t, "tmp")
+		make_dir(t, "tmp/inner")
+		make_dir(t, "tmp/inner/2")
+		make_dir(t, "tmp/inner2")
+		make_dir(t, "tmp/inner2/3")
+		make_dir(t, "tmp/inner2/4")
 		filewatch.watch_dir(&w, "tmp", recursive = true)
 
-		cud_file("tmp/test.txt")
-		make_dir("tmp/inner")
-		cud_file("tmp/inner/bar")
+		cud_file(t, "tmp/test.txt")
+		make_dir(t, "tmp/inner")
+		cud_file(t, "tmp/inner/bar")
 
 		changes := [?]filewatch.Msg {
 			filewatch.File_Created{path = "test.txt"},
@@ -75,12 +84,18 @@ non_recursive :: proc(t: ^testing.T) {
 	defer filewatch.destroy(&w)
 
 	{
-		make_dir("tmp_nr")
+		rm_dir(t, "tmp_nr")
+		make_dir(t, "tmp_nr")
+		make_dir(t, "tmp_nr/inner")
+		make_dir(t, "tmp_nr/inner/2")
+		make_dir(t, "tmp_nr/inner2")
+		make_dir(t, "tmp_nr/inner2/3")
+		make_dir(t, "tmp_nr/inner2/4")
 		filewatch.watch_dir(&w, "tmp_nr")
 
-		cud_file("tmp_nr/test.txt")
-		make_dir("tmp_nr/inner")
-		cud_file("tmp_nr/inner/bar")
+		cud_file(t, "tmp_nr/test.txt")
+		make_dir(t, "tmp_nr/inner")
+		cud_file(t, "tmp_nr/inner/bar")
 
 		changes := [?]filewatch.Msg {
 			filewatch.File_Created{path = "test.txt"},

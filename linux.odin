@@ -4,12 +4,121 @@ package fswatch
 import "core:c"
 import "core:container/queue"
 import "core:fmt"
+import "core:hash"
 import "core:log"
+import "core:mem"
 import "core:os"
+import "core:os/os2"
+import "core:path/filepath"
 import "core:strings"
 import "core:sync/chan"
 import "core:sys/linux"
 import "core:thread"
+
+Worker_State :: struct {
+	root_path: cstring,
+	dir_paths: map[Dir_Id]string,
+}
+
+Dir_Id :: struct {
+	fsid:        kernel_fsid_t,
+	handle_hash: u64,
+}
+
+walk_dir :: proc(state: ^Worker_State, dir: ^os2.File, path_rel: string) {
+	// linux.SYS_readdir
+	// TODO: n?
+	// dir_fd := linux.Fd(os2.fd(dir))
+	fis, err := os2.read_dir(dir, 1000, allocator = context.allocator)
+	walker := os2.walker_create(path_rel)
+	// os2.walker_init_path(&walker, path_rel)
+	for fi in os2.walker_walk(&walker) {
+		// info.fullpath
+		if fi.name == "." || fi.name == ".." {
+			continue
+		}
+		if fi.type != .Directory {
+			continue
+		}
+
+		// child_fd, err := linux.openat(
+		// 	dir_fd,
+		// 	strings.clone_to_cstring(fi.name),
+		// 	{.PATH, .DIRECTORY, .NOFOLLOW, .CLOEXEC},
+		// 	{},
+		// )
+		// os2.fd()
+
+		child_fd, err := linux.open(strings.clone_to_cstring(fi.fullpath), {.PATH, .CLOEXEC})
+		// path, err := os2.open(fi.fullpath, {.Read} context.allocator)
+		// os2.open(name, {.PATH,})
+		if err != nil {
+			log.error("err in open", err)
+			continue
+		}
+
+		{
+			fsid: kernel_fsid_t
+			buf := make([]u8, 128)
+			handle := cast(^File_Handle)&buf[0]
+			handle.bytes = u32(len(buf) - size_of(File_Handle))
+			dir_handle, err := name_to_handle_at(
+				child_fd,
+				".",
+				// strings.clone_to_cstring(fi.name),
+				handle,
+				&fsid,
+				0,
+			)
+			if err != nil {
+				log.error("name_to_handle_at failed", err)
+				continue
+			}
+			log.info("inserting", fi.fullpath, file_handle_hash(handle))
+
+			map_insert(
+				&state.dir_paths,
+				Dir_Id{fsid = fsid, handle_hash = file_handle_hash(handle)},
+				fi.fullpath,
+			)
+		}
+	}
+	// fis, err := os.read_dir(dir_fd, 1000)
+	if err != nil {
+		log.error("read_dir failed", err)
+	}
+	for fi, i in fis {
+		// walk_dir(state, fi.type child_fd, fi.name)
+	}
+}
+
+file_handle_hash :: proc(fh: ^File_Handle) -> u64 {
+	handle_bytes := cast(^u8)(cast(uintptr)fh + size_of(File_Handle))
+	byte_slc := mem.slice_ptr(handle_bytes, int(fh.bytes))
+	return hash.fnv64a(byte_slc)
+}
+
+// TODO: flags type
+name_to_handle_at :: proc(
+	dirfd: linux.Fd,
+	path: cstring,
+	handle: ^File_Handle,
+	mount_id: ^kernel_fsid_t,
+	flags: u64,
+) -> (
+	linux.Fd,
+	linux.Errno,
+) {
+	ret := linux.syscall(
+		linux.SYS_name_to_handle_at,
+		dirfd,
+		uintptr(rawptr(path)),
+		handle,
+		mount_id,
+		0,
+	)
+	return errno_unwrap(ret, linux.Fd)
+}
 
 _watch_worker :: proc(t: ^thread.Thread) {
 	thread_data := cast(^_Worker_Data)t.data
@@ -29,6 +138,25 @@ _watch_worker :: proc(t: ^thread.Thread) {
 		log.error(err)
 		chan.send(thread_data.status_chan, false)
 		return
+	}
+
+	state := Worker_State {
+		root_path = strings.clone_to_cstring(thread_data.path),
+		dir_paths = make(map[Dir_Id]string),
+	}
+	// state.dir_paths[] = ""
+	{
+		dir, err := os2.open(thread_data.path)
+		if err != nil {
+			log.error("failed to open", err)
+		}
+		walk_dir(&state, dir, thread_data.path)
+		// log.info(state.dir_paths)
+
+		log.info(len(state.dir_paths))
+		for v in state.dir_paths {
+			log.info(v)
+		}
 	}
 
 	log.debug("Fanotify mark...")
@@ -111,27 +239,44 @@ _watch_worker :: proc(t: ^thread.Thread) {
 						break
 					}
 
-					log.info(info)
+					// log.info(info)
 
 					is_dir := event.mask & FAN_ONDIR != 0
 
 					#partial switch info.info_type {
 					case .FAN_EVENT_INFO_TYPE_DFID_NAME:
 						fid := cast(^fanotify_event_info_fid)info
-						fh := cast(^File_Handle)(uintptr(fid) + size_of(fanotify_event_info_fid))
-						str_ptr := cast(^u8)(uintptr(fh) +
-							size_of(File_Handle) +
-							uintptr(fh.bytes))
+
+						child_fh := cast(^File_Handle)(uintptr(fid) +
+							size_of(fanotify_event_info_fid))
+						parent_fh := cast(^File_Handle)(uintptr(file_handle_bytes(child_fh)) +
+							uintptr(child_fh.bytes))
+						name_ptr :=
+							uintptr(file_handle_bytes(parent_fh)) + uintptr(parent_fh.bytes)
+
+						// fh := cast(^File_Handle)(uintptr(fid) + size_of(fanotify_event_info_fid))
+						// 						parent_handle:= cast(^u8)(uintptr(fh) +
+						// 	size_of(File_Handle)
+
+						// str_ptr := cast(^u8)(parent_handle+uintptr(fh.bytes))
 						// TODO: check bounds
 						// name := transmute(cstring)str_ptr
 						// log.info("name", name)
+
+
 						event_end := uintptr(event) + uintptr(event.event_len)
-						if uintptr(str_ptr) < event_end {
-							name := transmute(cstring)(cast(^u8)str_ptr)
-							log.info("name", name)
+						if uintptr(name_ptr) < event_end {
+							name := transmute(cstring)(cast(^u8)name_ptr)
 
 							// TODO: i think i get it now. we cache the dir structure by mapping fds to paths by walking the tree before emitting events.
-							path := strings.clone_from_cstring(name)
+							parent_path, ok :=
+								state.dir_paths[Dir_Id{fsid = fid.fsid, handle_hash = file_handle_hash(parent_fh)}]
+							if !ok {
+								log.warn("parent not in map", name)
+							}
+							path := fmt.tprintf("%s/%s", parent_path, name)
+							// path := strings.clone_from_cstring(name)
+							log.info(path)
 							switch {
 							case event.mask & FAN_CREATE != 0:
 								_push_message(&msg_buf, File_Created{path = path})
@@ -225,6 +370,10 @@ _watch_worker :: proc(t: ^thread.Thread) {
 		}
 	}
 	log.debug("stopping watcher thread")
+}
+
+file_handle_bytes :: proc(fh: ^File_Handle) -> ^u8 {
+	return cast(^u8)(uintptr(fh) + size_of(File_Handle))
 }
 
 O_APPEND :: 000000010
