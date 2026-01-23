@@ -42,7 +42,6 @@ _tick :: proc(buf: ^Msg_Buffer, msg_queue: ^queue.Queue(Msg)) {
 	if time.diff(buf.last_sent_time, time.now()) >= buf.throttle_time {
 		buf.last_sent_time = time.now()
 		for msg, i in buf.messages {
-			log.warn(msg, i)
 			queue.push(msg_queue, msg)
 		}
 		clear(&buf.messages)

@@ -17,8 +17,7 @@ make_dir :: proc(t: ^testing.T, dir: string) {
 }
 cud_file :: proc(t: ^testing.T, path: string) {
 	f, err := os2.create(path)
-	if err != nil {assert(err == nil)}
-	os2.flush(f)
+	testing.expect_value(t, err, nil)
 	_, err = os2.write_string(f, "foo")
 	testing.expect_value(t, err, nil)
 	err = os2.flush(f)
@@ -49,6 +48,7 @@ recursive :: proc(t: ^testing.T) {
 			filewatch.File_Modified{path = "test.txt"},
 			filewatch.File_Removed{path = "test.txt"},
 			filewatch.File_Created{path = "inner"},
+			// TODO: flaky
 			filewatch.File_Created{path = "inner/bar"},
 			filewatch.File_Modified{path = "inner/bar"},
 			filewatch.File_Removed{path = "inner/bar"},
