@@ -106,6 +106,7 @@ watch_dir :: proc(
 destroy :: proc(watcher: ^Watcher) {
 	chan.close(watcher.chan)
 	for w in watcher.workers {
+		chan.close(w.status_chan)
 		thread.join(w.thread)
 		free(w.thread)
 	}

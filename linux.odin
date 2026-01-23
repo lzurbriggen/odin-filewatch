@@ -55,56 +55,11 @@ watch_remove :: proc(state: ^Worker_State, wd: linux.Wd) {
 }
 
 walk_dir :: proc(state: ^Worker_State, path_rel: string) {
-	// TODO: n?
-	// fis, err := os2.read_dir(dir, 1000, allocator = context.allocator)
-
 	watch_add(state, path_rel)
-
 	walker := os2.walker_create(path_rel)
+	defer os2.walker_destroy(&walker)
 	for fi in os2.walker_walk(&walker) {
-		// if fi.name == "." || fi.name == ".." {
-		// 	continue
-		// }
-		// if fi.type != .Directory {
-		// 	continue
-		// }
-
-
-		log.info(fi, fi.fullpath)
 		watch_add(state, fi.fullpath)
-
-		// parent_path := filepath.dir(fi.fullpath)
-		// parent_fd, cerr := linux.open(strings.clone_to_cstring(parent_path), {.PATH})
-		// if cerr != nil {
-		// 	log.error("err in open", cerr)
-		// 	return
-		// }
-		// log.info(parent_fd, parent_path, fi.name)
-
-		// {
-		// 	fsid: kernel_fsid_t
-		// 	MAX_HANDLE_SIZE :: 128
-		// 	buf := make([]u8, MAX_HANDLE_SIZE)
-		// 	handle := cast(^File_Handle)&buf[0]
-		// 	handle.bytes = u32(len(buf) - size_of(File_Handle))
-		// 	_, err := name_to_handle_at(
-		// 		parent_fd,
-		// 		strings.clone_to_cstring(fi.name),
-		// 		handle,
-		// 		&fsid,
-		// 		0,
-		// 	)
-		// 	if err != nil {
-		// 		log.error("name_to_handle_at failed", err)
-		// 		continue
-		// 	}
-		// 	log.info(handle, fi.fullpath)
-		// 	map_insert(
-		// 		&state.dir_paths,
-		// 		Dir_Id{fsid = fsid, handle_hash = file_handle_hash(handle)},
-		// 		fi.fullpath,
-		// 	)
-		// }
 	}
 }
 
@@ -126,7 +81,7 @@ name_to_handle_at :: proc(
 	linux.Errno,
 ) {
 	ret := linux.syscall(
-		linux.SYS_name_to_handle_at,
+		linux.SYS_select,
 		dirfd,
 		uintptr(rawptr(path)),
 		uintptr(handle),
@@ -146,7 +101,7 @@ _watch_worker :: proc(t: ^thread.Thread) {
 	// log.debug(thread_data.path)
 
 	log.debug("Inotify init...")
-	inotify_fd, err := linux.inotify_init1({})
+	inotify_fd, err := linux.inotify_init1({.NONBLOCK})
 	if err != .NONE {
 		log.error(err)
 		chan.send(thread_data.status_chan, false)
@@ -192,53 +147,126 @@ _watch_worker :: proc(t: ^thread.Thread) {
 			queue.pop_back(&msg_queue)
 		}
 
+		/* for select() */
+		FD_SETSIZE :: 256
+
+		FD_SETIDXMASK :: (8 * size_of(u64))
+		FD_SETBITMASK :: (8 * size_of(u64) - 1)
+		Fd_Set :: struct {
+			fds: [(FD_SETSIZE + FD_SETBITMASK) / FD_SETIDXMASK]u64,
+		}
+
+		FD_SET :: proc(fd: linux.Fd, set: ^Fd_Set) {
+			__set := (set)
+			__fd := uintptr(fd)
+			if (__fd >= 0) {
+				__set.fds[__fd / FD_SETIDXMASK] |= 1 << (__fd & FD_SETBITMASK)
+			}
+		}
+
+		// #define FD_ISSET(fd, set) ({						
+		// 			fd_set *__set = (set);				
+		// 			int __fd = (fd);				
+		// 		int __r = 0;						
+		// 		if (__fd >= 0)						
+		// 			__r = !!(__set->fds[__fd / FD_SETIDXMASK] &	
+		// 1U << (__fd & FD_SETBITMASK));						
+		// 		__r;							
+		// 	})
+
+		FD_ZERO :: proc(set: ^Fd_Set) {
+			__set := (set)
+			__idx: c.int
+			__size: c.int = (FD_SETSIZE + FD_SETBITMASK) / FD_SETIDXMASK
+			for __idx := 0; i32(__idx) < __size; __idx += 1 {
+				__set.fds[__idx] = 0
+			}
+		}
+
+		watch_set := Fd_Set{}
+		FD_ZERO(&watch_set)
+		FD_SET(state.inotify_fd, &watch_set)
+
 		// TODO
 		when ODIN_OS == .Linux {
-			// offset :=
-			// for offset < avail {
-
+			linux.syscall(
+				linux.SYS_select,
+				uintptr(state.inotify_fd) + 1,
+				&watch_set,
+				uintptr(rawptr(nil)),
+				uintptr(rawptr(nil)),
+				&linux.Time_Val{seconds = 0, microseconds = 10000},
+			)
 
 			NAME_MAX :: 128
-			MAX_BUF_SIZE :: size_of(linux.Inotify_Event) + NAME_MAX + 1
+			MAX_BUF_SIZE :: size_of(linux.Inotify_Event) + NAME_MAX * 10 + 1
 			read_buf := make([]u8, MAX_BUF_SIZE)
 			defer delete(read_buf)
-			len, err := linux.read(state.inotify_fd, read_buf)
+			evs_len, err := linux.read(state.inotify_fd, read_buf)
 			if err != nil && err != .EAGAIN {
 				log.error(err)
 				continue
 			}
-			if len <= 0 {
-				continue
-			}
+			i := 0
+			for i < evs_len {
+				log.info(evs_len, i)
+				event := cast(^linux.Inotify_Event)&read_buf[i]
+				defer i += size_of(linux.Inotify_Event) + int(event.len)
 
+				// len, err := linux.read(state.inotify_fd, read_buf)
+				// if err != nil && err != .EAGAIN {
+				// 	log.error(err)
+				// 	continue
+				// }
+				// if len <= 0 {
+				// 	continue
+				// }
 
-			event := cast(^linux.Inotify_Event)&read_buf[0]
-			name_ptr := cast([^]u8)(&event.name)
-			name := cast(cstring)name_ptr
-			path, ok := state.watches[event.wd]
-			if !ok {
-				log.warn("Wd not in watches:", event.wd, name)
-				continue
+				name_ptr := cast([^]u8)(&event.name)
+				name := cast(cstring)name_ptr
+				path, ok := state.watches[event.wd]
+				if !ok {
+					log.warn("Wd not in watches:", event.wd, name)
+					continue
+				}
+				path = filepath.join(
+					{path, strings.clone_from_cstring_bounded(name, int(event.len))},
+				)
+				rel_path, rerr := filepath.rel(state.root_path, path)
+				if rerr != nil {
+					log.error("Not able to build relative path", rel_path, rerr)
+					continue
+				}
+				log.info(name, path, rel_path, event.mask)
+				// TODO: clean up
+				if .CREATE in event.mask {
+					_push_message(&msg_buf, File_Created{path = rel_path})
+					watch_add(&state, path)
+					// TODO: walk new dir and push created messages for files
+					if .ISDIR in event.mask {
+						walker := os2.walker_create(path)
+						defer os2.walker_destroy(&walker)
+						log.debug("Walking new dir", path)
+						for fi in os2.walker_walk(&walker) {
+							log.debug("File in created dir found", fi.fullpath)
+							// TODO: rel path
+							rel_path, rerr := filepath.rel(state.root_path, fi.fullpath)
+							if rerr != nil {
+								log.error("Not able to build relative path", fi.fullpath, rerr)
+								continue
+							}
+							_push_message(&msg_buf, File_Created{path = rel_path})
+						}
+					}
+				} else if .DELETE in event.mask || .DELETE_SELF in event.mask {
+					_push_message(&msg_buf, File_Removed{path = rel_path})
+					// watch_remove(&state, event.wd)
+				} else if .MODIFY in event.mask {
+					_push_message(&msg_buf, File_Modified{path = rel_path})
+				} else {
+					log.warn("unhandled", event)
+				}
 			}
-			path = filepath.join({path, strings.clone_from_cstring_bounded(name, int(event.len))})
-			rel_path, rerr := filepath.rel(state.root_path, path)
-			if rerr != nil {
-				log.error("Not able to make relative path", rel_path, rerr)
-				continue
-			}
-			switch event.mask {
-			case {.CREATE}:
-				_push_message(&msg_buf, File_Created{path = rel_path})
-				watch_add(&state, path)
-			case {.DELETE}:
-				_push_message(&msg_buf, File_Removed{path = rel_path})
-				watch_remove(&state, event.wd)
-			case {.MODIFY}:
-				_push_message(&msg_buf, File_Modified{path = rel_path})
-			case:
-				log.warn("unhandled", event)
-			}
-
 		}
 	}
 	log.debug("stopping watcher thread")
@@ -369,7 +397,7 @@ fanotify_init :: proc "contextless" (
 	linux.Fd,
 	linux.Errno,
 ) {
-	ret := linux.syscall(linux.SYS_fanotify_init, flags, event_f_flags)
+	ret := linux.syscall(linux.SYS_select, flags, event_f_flags)
 	return errno_unwrap(ret, linux.Fd)
 }
 
@@ -457,7 +485,7 @@ fanotify_mark :: proc "contextless" (
 	linux.Errno,
 ) {
 	ret := linux.syscall(
-		linux.SYS_fanotify_mark,
+		linux.SYS_select,
 		c.int(fanotify_fd),
 		c.uint(flags),
 		c.uint64_t(mask),

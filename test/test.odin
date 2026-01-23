@@ -38,11 +38,6 @@ recursive :: proc(t: ^testing.T) {
 	{
 		rm_dir(t, "tmp")
 		make_dir(t, "tmp")
-		// make_dir(t, "tmp/inner")
-		// make_dir(t, "tmp/inner/2")
-		// make_dir(t, "tmp/inner2")
-		// make_dir(t, "tmp/inner2/3")
-		// make_dir(t, "tmp/inner2/4")
 		filewatch.watch_dir(&w, "tmp", recursive = true)
 
 		cud_file(t, "tmp/test.txt")
@@ -83,44 +78,37 @@ non_recursive :: proc(t: ^testing.T) {
 	if err != nil {assert(err == nil)}
 	defer filewatch.destroy(&w)
 
-	{
-		rm_dir(t, "tmp_nr")
-		make_dir(t, "tmp_nr")
-		// make_dir(t, "tmp_nr/inner")
-		// make_dir(t, "tmp_nr/inner/2")
-		// make_dir(t, "tmp_nr/inner2")
-		// make_dir(t, "tmp_nr/inner2/3")
-		// make_dir(t, "tmp_nr/inner2/4")
-		filewatch.watch_dir(&w, "tmp_nr")
+	rm_dir(t, "tmp_nr")
+	make_dir(t, "tmp_nr")
+	filewatch.watch_dir(&w, "tmp_nr")
 
-		cud_file(t, "tmp_nr/test.txt")
-		make_dir(t, "tmp_nr/inner")
-		cud_file(t, "tmp_nr/inner/bar")
+	cud_file(t, "tmp_nr/test.txt")
+	make_dir(t, "tmp_nr/inner")
+	cud_file(t, "tmp_nr/inner/bar")
 
-		changes := [?]filewatch.Msg {
-			filewatch.File_Created{path = "test.txt"},
-			filewatch.File_Modified{path = "test.txt"},
-			filewatch.File_Removed{path = "test.txt"},
-			filewatch.File_Created{path = "inner"},
-			// TODO: non-recursive not working
-			filewatch.File_Created{path = "inner2"},
+	changes := [?]filewatch.Msg {
+		filewatch.File_Created{path = "test.txt"},
+		filewatch.File_Modified{path = "test.txt"},
+		filewatch.File_Removed{path = "test.txt"},
+		filewatch.File_Created{path = "inner"},
+		// TODO: non-recursive not working
+		// filewatch.File_Created{path = "inner/bar"},
+	}
+	s := 0
+	msgs := [len(changes)]filewatch.Msg{}
+	for i in 0 ..< len(changes) {
+		if chan.is_closed(w.chan) {
+			break
 		}
-		s := 0
-		msgs := [len(changes)]filewatch.Msg{}
-		for i in 0 ..< len(changes) {
-			if chan.is_closed(w.chan) {
-				break
-			}
-			if data, ok := chan.recv(w.chan); ok {
-				msgs[i] = data
-				s += 1
-				log.info("Event received:", data)
-			}
+		if data, ok := chan.try_recv(w.chan); ok {
+			msgs[i] = data
+			s += 1
+			log.info("Event received:", data)
 		}
-		testing.expect_value(t, len(msgs), len(changes))
-		for msg, i in changes {
-			testing.expect_value(t, msgs[i], msg)
-		}
+	}
+	testing.expect_value(t, len(msgs), len(changes))
+	for msg, i in changes {
+		testing.expect_value(t, msgs[i], msg)
 	}
 }
 
