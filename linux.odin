@@ -26,14 +26,10 @@ Dir_Id :: struct {
 }
 
 walk_dir :: proc(state: ^Worker_State, dir: ^os2.File, path_rel: string) {
-	// linux.SYS_readdir
 	// TODO: n?
-	// dir_fd := linux.Fd(os2.fd(dir))
 	fis, err := os2.read_dir(dir, 1000, allocator = context.allocator)
 	walker := os2.walker_create(path_rel)
-	// os2.walker_init_path(&walker, path_rel)
 	for fi in os2.walker_walk(&walker) {
-		// info.fullpath
 		if fi.name == "." || fi.name == ".." {
 			continue
 		}
@@ -41,31 +37,23 @@ walk_dir :: proc(state: ^Worker_State, dir: ^os2.File, path_rel: string) {
 			continue
 		}
 
-		// child_fd, err := linux.openat(
-		// 	dir_fd,
-		// 	strings.clone_to_cstring(fi.name),
-		// 	{.PATH, .DIRECTORY, .NOFOLLOW, .CLOEXEC},
-		// 	{},
-		// )
-		// os2.fd()
-
-		child_fd, err := linux.open(strings.clone_to_cstring(fi.fullpath), {.PATH, .CLOEXEC})
-		// path, err := os2.open(fi.fullpath, {.Read} context.allocator)
-		// os2.open(name, {.PATH,})
-		if err != nil {
-			log.error("err in open", err)
-			continue
+		parent_path := filepath.dir(fi.fullpath)
+		parent_fd, cerr := linux.open(strings.clone_to_cstring(parent_path), {.PATH})
+		if cerr != nil {
+			log.error("err in open", cerr)
+			return
 		}
+		log.info(parent_fd, parent_path, fi.name)
 
 		{
 			fsid: kernel_fsid_t
-			buf := make([]u8, 128)
+			MAX_HANDLE_SIZE :: 128
+			buf := make([]u8, MAX_HANDLE_SIZE)
 			handle := cast(^File_Handle)&buf[0]
 			handle.bytes = u32(len(buf) - size_of(File_Handle))
-			dir_handle, err := name_to_handle_at(
-				child_fd,
-				".",
-				// strings.clone_to_cstring(fi.name),
+			_, err := name_to_handle_at(
+				parent_fd,
+				strings.clone_to_cstring(fi.name),
 				handle,
 				&fsid,
 				0,
@@ -74,21 +62,13 @@ walk_dir :: proc(state: ^Worker_State, dir: ^os2.File, path_rel: string) {
 				log.error("name_to_handle_at failed", err)
 				continue
 			}
-			log.info("inserting", fi.fullpath, file_handle_hash(handle))
-
+			log.info(handle, fi.fullpath)
 			map_insert(
 				&state.dir_paths,
 				Dir_Id{fsid = fsid, handle_hash = file_handle_hash(handle)},
 				fi.fullpath,
 			)
 		}
-	}
-	// fis, err := os.read_dir(dir_fd, 1000)
-	if err != nil {
-		log.error("read_dir failed", err)
-	}
-	for fi, i in fis {
-		// walk_dir(state, fi.type child_fd, fi.name)
 	}
 }
 
@@ -104,20 +84,20 @@ name_to_handle_at :: proc(
 	path: cstring,
 	handle: ^File_Handle,
 	mount_id: ^kernel_fsid_t,
-	flags: u64,
+	flags: c.int,
 ) -> (
-	linux.Fd,
+	int,
 	linux.Errno,
 ) {
 	ret := linux.syscall(
 		linux.SYS_name_to_handle_at,
 		dirfd,
 		uintptr(rawptr(path)),
-		handle,
-		mount_id,
-		0,
+		uintptr(handle),
+		uintptr(mount_id),
+		uintptr(flags),
 	)
-	return errno_unwrap(ret, linux.Fd)
+	return errno_unwrap(ret, int)
 }
 
 _watch_worker :: proc(t: ^thread.Thread) {
@@ -144,19 +124,50 @@ _watch_worker :: proc(t: ^thread.Thread) {
 		root_path = strings.clone_to_cstring(thread_data.path),
 		dir_paths = make(map[Dir_Id]string),
 	}
+
 	// state.dir_paths[] = ""
+	// mount_fd: kernel_fsid_t
 	{
+		// {
+		// 	buf := make([]u8, 512)
+		// 	handle := cast(^File_Handle)&buf[0]
+		// 	handle.bytes = u32(len(buf) - size_of(File_Handle))
+
+		// 	// fsid: kernel_fsid_t
+
+		// 	root_fd, err := linux.open(state.root_path, {.PATH, .CLOEXEC})
+		// 	if err != nil {
+		// 		fmt.println("root_fd failed:", err)
+		// 		return
+		// 	}
+
+		// 	ret, nerr := name_to_handle_at(
+		// 		root_fd,
+		// 		strings.clone_to_cstring("."),
+		// 		handle,
+		// 		&mount_fd,
+		// 		0,
+		// 	)
+		// 	if ret != 0 {
+		// 		fmt.println("name_to_handle_at failed:", nerr)
+		// 		return
+		// 	}
+		// }
+
 		dir, err := os2.open(thread_data.path)
+
 		if err != nil {
 			log.error("failed to open", err)
 		}
+		// mount_fd = linux.Fd(os2.fd(dir))
 		walk_dir(&state, dir, thread_data.path)
 		// log.info(state.dir_paths)
 
-		log.info(len(state.dir_paths))
-		for v in state.dir_paths {
-			log.info(v)
+		log.info("logging dir_paths")
+		for k, v in state.dir_paths {
+			log.info(k, v)
 		}
+
 	}
 
 	log.debug("Fanotify mark...")
@@ -247,113 +258,60 @@ _watch_worker :: proc(t: ^thread.Thread) {
 					case .FAN_EVENT_INFO_TYPE_DFID_NAME:
 						fid := cast(^fanotify_event_info_fid)info
 
-						child_fh := cast(^File_Handle)(uintptr(fid) +
-							size_of(fanotify_event_info_fid))
-						parent_fh := cast(^File_Handle)(uintptr(file_handle_bytes(child_fh)) +
-							uintptr(child_fh.bytes))
-						name_ptr :=
-							uintptr(file_handle_bytes(parent_fh)) + uintptr(parent_fh.bytes)
+						parent_fh, name, ok := extract_dfid_name(event, info)
+						if ok {
 
-						// fh := cast(^File_Handle)(uintptr(fid) + size_of(fanotify_event_info_fid))
-						// 						parent_handle:= cast(^u8)(uintptr(fh) +
-						// 	size_of(File_Handle)
-
-						// str_ptr := cast(^u8)(parent_handle+uintptr(fh.bytes))
-						// TODO: check bounds
-						// name := transmute(cstring)str_ptr
-						// log.info("name", name)
-
-
-						event_end := uintptr(event) + uintptr(event.event_len)
-						if uintptr(name_ptr) < event_end {
-							name := transmute(cstring)(cast(^u8)name_ptr)
-
-							// TODO: i think i get it now. we cache the dir structure by mapping fds to paths by walking the tree before emitting events.
-							parent_path, ok :=
-								state.dir_paths[Dir_Id{fsid = fid.fsid, handle_hash = file_handle_hash(parent_fh)}]
-							if !ok {
-								log.warn("parent not in map", name)
+							parent_id := Dir_Id {
+								fsid        = fid.fsid,
+								handle_hash = file_handle_hash(parent_fh),
 							}
-							path := fmt.tprintf("%s/%s", parent_path, name)
-							// path := strings.clone_from_cstring(name)
-							log.info(path)
-							switch {
-							case event.mask & FAN_CREATE != 0:
-								_push_message(&msg_buf, File_Created{path = path})
-							case event.mask & FAN_DELETE != 0:
-								_push_message(
-									&msg_buf,
-									File_Removed{path = strings.clone_from_cstring(name)},
-								)
-							case event.mask & FAN_MODIFY != 0:
-								_push_message(
-									&msg_buf,
-									File_Modified{path = strings.clone_from_cstring(name)},
-								)
-							case event.mask & FAN_RENAME != 0:
-							// _push_message(
-							// 	&msg_buf,
-							// 	File_Renamed{path = strings.clone_from_cstring(name)},
-							// )
+							log.info(parent_id, parent_fh, name)
+
+							// log.info(parent_id)
+							parent_path, exists := state.dir_paths[parent_id]
+							if !exists {
+								parent_path = "."
+								log.warn("parent not in map:", name)
 							}
-						} else {
-							log.warn("DFID_NAME missing (flag?)")
+
+							full_path := fmt.tprintf("%s/%s", parent_path, name)
+							log.info("Full path:", full_path)
 						}
-					case .FAN_EVENT_INFO_TYPE_DFID:
-					// fid := cast(^fanotify_event_info_fid)info
 
-					// // pointer to struct file_handle inside the event
-					// fh := cast(^os.Handle)(uintptr(fid) + size_of(fanotify_event_info_fid))
+					// // event_end := uintptr(event) + uintptr(event.event_len)
+					// if uintptr(name_ptr) < event_end {
+					// 	name := transmute(cstring)(cast(^u8)name_ptr)
 
-					// mount_fd, err := linux.open(
-					// 	strings.clone_to_cstring(thread_data.path),
-					// 	{.PATH, .DIRECTORY},
-					// 	nil,
-					// )
-					// fd := linux.syscall(
-					// 	linux.SYS_open_by_handle_at,
-					// 	mount_fd,
-					// 	fh,
-					// 	os.O_RDONLY | os.O_CLOEXEC,
-					// )
-
-					// if fd < 0 {
-					// 	// err := os.errno()
-					// 	log.error("open_by_handle_at failed", err)
+					// 	// TODO: i think i get it now. we cache the dir structure by mapping fds to paths by walking the tree before emitting events.
+					// 	parent_path, ok :=
+					// 		state.dir_paths[Dir_Id{fsid = fid.fsid, handle_hash = file_handle_hash(parent_fh)}]
+					// 	if !ok {
+					// 		log.warn("parent not in map", name)
+					// 	}
+					// 	path := fmt.tprintf("%s/%s", parent_path, name)
+					// 	// path := strings.clone_from_cstring(name)
+					// 	log.info(path)
+					// 	switch {
+					// 	case event.mask & FAN_CREATE != 0:
+					// 		_push_message(&msg_buf, File_Created{path = path})
+					// 	case event.mask & FAN_DELETE != 0:
+					// 		_push_message(
+					// 			&msg_buf,
+					// 			File_Removed{path = strings.clone_from_cstring(name)},
+					// 		)
+					// 	case event.mask & FAN_MODIFY != 0:
+					// 		_push_message(
+					// 			&msg_buf,
+					// 			File_Modified{path = strings.clone_from_cstring(name)},
+					// 		)
+					// 	case event.mask & FAN_RENAME != 0:
+					// 	// _push_message(
+					// 	// 	&msg_buf,
+					// 	// 	File_Renamed{path = strings.clone_from_cstring(name)},
+					// 	// )
+					// 	}
 					// } else {
-					// 	// fd is now an open fd to the object
-					// }
-					// // fid.handle
-					// // linux.SYS_open_by_handle_at
-					// // TODO
-					// buf := make([]u8, 8192)
-					// pathlen: int
-					// pathlen, err = linux.readlink(fmt.ctprintf("/proc/self/fd/%i", fd), buf)
-					// // log.info(
-					// // 	transmute(cstring)&buf[0], // fmt.ctprintf("/proc/self/fd/%i", event.fd),
-					// // )
-					// log.info(transmute(cstring)(&buf))
-					case .FAN_EVENT_INFO_TYPE_FID:
-					// fid := cast(^fanotify_event_info_fid)info
-					// open_res := linux.syscall(
-					// 	linux.SYS_open_by_handle_at,
-					// 	fid.fsid,
-					// 	&fid.handle[0],
-					// )
-					// // fid.handle
-					// // linux.SYS_open_by_handle_at
-					// // TODO
-					// buf := make([]u8, 8192)
-					// pathlen, err := linux.readlink(
-					// 	fmt.ctprintf("/proc/self/fd/%i", event.fd),
-					// 	buf,
-					// )
-					// // log.info(
-					// // 	transmute(cstring)&buf[0], // fmt.ctprintf("/proc/self/fd/%i", event.fd),
-					// // )
-					// log.info(transmute(cstring)(&buf))
-					// if pathlen != -1 {
-
+					// 	log.warn("DFID_NAME missing (flag?)")
 					// }
 					}
 					if info.len < size_of(fanotify_event_info_header) {
@@ -370,6 +328,37 @@ _watch_worker :: proc(t: ^thread.Thread) {
 		}
 	}
 	log.debug("stopping watcher thread")
+}
+
+extract_dfid_name :: proc(
+	event: ^fanotify_event_metadata,
+	info: ^fanotify_event_info_header,
+) -> (
+	parent_fh: ^File_Handle,
+	child_name: string,
+	ok: bool,
+) {
+	if info.info_type != .FAN_EVENT_INFO_TYPE_DFID_NAME {
+		return
+	}
+
+	fid := cast(^fanotify_event_info_fid)info
+
+	parent_fh = cast(^File_Handle)(uintptr(fid) + size_of(fanotify_event_info_fid))
+
+	name_ptr := cast(^u8)(uintptr(parent_fh) + size_of(File_Handle) + uintptr(parent_fh.bytes))
+
+	info_start := uintptr(info)
+	info_end := info_start + uintptr(info.len)
+
+	if uintptr(name_ptr) >= info_end {
+		log.warn("DFID_NAME name_ptr past end of info")
+		return
+	}
+
+	child_name = strings.clone_from_cstring(transmute(cstring)(name_ptr))
+	ok = true
+	return
 }
 
 file_handle_bytes :: proc(fh: ^File_Handle) -> ^u8 {
@@ -412,7 +401,6 @@ FAN_EVENT_NEXT :: proc(meta: ^fanotify_event_metadata, len: ^int) -> ^fanotify_e
 	return transmute(^fanotify_event_metadata)new_ptr
 }
 
-FAN_EVENT_METADATA_LEN :: size_of(fanotify_event_metadata)
 
 FAN_EVENT_OK :: proc(meta: ^fanotify_event_metadata, len: int) -> bool {
 	// log.debug(
@@ -565,17 +553,16 @@ fanotify_mark :: proc "contextless" (
 	return errno_unwrap(ret, int)
 }
 
-
-fanotify_event_metadata :: struct #packed {
+fanotify_event_metadata :: struct {
 	event_len:    u32,
 	vers:         u8,
 	reserved:     u8,
 	metadata_len: u16,
-	// TODO: 8-byte alignment relevant? original type is: aligned_u64
 	mask:         Fan_Event,
 	fd:           linux.Fd,
 	pid:          linux.Pid,
 }
+FAN_EVENT_METADATA_LEN :: size_of(fanotify_event_metadata)
 
 Fanotify_Event_Info_Type :: enum u8 {
 	FAN_EVENT_INFO_TYPE_FID           = 1,
@@ -589,7 +576,7 @@ Fanotify_Event_Info_Type :: enum u8 {
 	FAN_EVENT_INFO_TYPE_NEW_DFID_NAME = 12,
 }
 
-fanotify_event_info_header :: struct #packed {
+fanotify_event_info_header :: struct {
 	info_type: Fanotify_Event_Info_Type,
 	pad:       u8,
 	len:       u16,
@@ -599,7 +586,7 @@ kernel_fsid_t :: struct #packed {
 	val: [2]c.int,
 }
 
-fanotify_event_info_fid :: struct #packed {
+fanotify_event_info_fid :: struct {
 	hdr:  fanotify_event_info_header,
 	fsid: kernel_fsid_t,
 	/*
