@@ -189,7 +189,7 @@ _handle_events :: proc(entry: ^Windows_Entry, msg_buf: ^Msg_Buffer, msg_queue: ^
 }
 
 _watch_worker :: proc(t: ^thread.Thread) {
-	thread_data := cast(^_Worker_Data)t.data
+	thread_data := cast(^Worker_Data)t.data
 	channel := thread_data.chan
 
 	msg_queue := queue.Queue(Msg){}

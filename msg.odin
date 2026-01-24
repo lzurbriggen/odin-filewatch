@@ -41,7 +41,14 @@ _push_message :: proc(buf: ^Msg_Buffer, msg: Msg) {
 _tick :: proc(buf: ^Msg_Buffer, msg_queue: ^queue.Queue(Msg)) {
 	if time.diff(buf.last_sent_time, time.now()) >= buf.throttle_time {
 		buf.last_sent_time = time.now()
+		last_msg: Msg
 		for msg, i in buf.messages {
+			if msg == last_msg {
+				// hack to fix duplicate events
+				log.warn("Duplicate event:", msg)
+				continue
+			}
+			last_msg = msg
 			queue.push(msg_queue, msg)
 		}
 		clear(&buf.messages)
