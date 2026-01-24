@@ -21,18 +21,40 @@ parse_test :: proc(t: ^testing.T) {
 	expect_match(t, glob_from_pattern("foo/?.bar"), {"foo", Tok_Slash{}, Tok_Any_Char{}, ".bar"})
 }
 
+@(test)
+match_test :: proc(t: ^testing.T) {
+	testing.expect_value(t, glob("/**/bin", "/foo/bar/bin"), true)
+	testing.expect_value(t, glob("/**/bin", "/foo/bar/hellope"), false)
+	testing.expect_value(t, glob("/**/bin", "//bin"), true)
+	testing.expect_value(t, glob("/**/bin", "/bin"), false)
+	testing.expect_value(t, glob("**/bin", "/bin"), true)
+	testing.expect_value(t, glob("*/bin", "/bin"), true)
+	testing.expect_value(t, glob("*/bin", "bin"), false)
+	testing.expect_value(t, glob("*/bin", "foo/bin"), true)
+	testing.expect_value(t, glob("/*/bin", "/bin"), false)
+	testing.expect_value(t, glob("/*/bin", "/foo/bin"), true)
+	testing.expect_value(t, glob("/*/bin", "/foo/bar/bin"), false)
+	testing.expect_value(t, glob("test/*/hellope", "test/bar/hellope"), true)
+	testing.expect_value(t, glob("/**/test/*/hellope", "/foo/test/bar/hellope"), true)
+	testing.expect_value(t, glob("?at", "cat"), true)
+	testing.expect_value(t, glob("?at", "bat"), true)
+	testing.expect_value(t, glob("?at", ".at"), true)
+	testing.expect_value(t, glob("?at", ".ar"), false)
+	testing.expect_value(t, glob("?at", "/at"), false)
+}
+
 @(private)
 expect_match :: proc(
 	t: ^testing.T,
-	glob: Glob,
+	glob: Glob_Prepared,
 	err: Err,
 	expected: []Glob_Token,
 	loc := #caller_location,
 ) {
 	testing.expect_value(t, err, nil)
-	testing.expect_value(t, len(glob.compiled), len(expected), loc)
+	testing.expect_value(t, len(glob.toks), len(expected), loc)
 	for tok, i in expected {
-		tok_match(t, glob.compiled[i], tok)
+		tok_match(t, glob.toks[i], tok)
 	}
 }
 
