@@ -7,23 +7,37 @@ import "core:time"
 
 _Msg_Chan :: chan.Chan(Msg)
 
-Msg :: union {
-	File_Created,
-	File_Modified,
-	File_Removed,
-	File_Renamed,
+
+Target :: enum {
+	File,
+	Dir,
+}
+Msg :: struct {
+	target: Target,
+	event:  Event,
+}
+Event :: union {
+	Ev_Created,
+	Ev_Modified,
+	Ev_Moved,
+	Ev_Removed,
+	Ev_Renamed,
 }
 
-File_Created :: struct {
+Ev_Created :: struct {
 	path: string,
 }
-File_Modified :: struct {
+Ev_Modified :: struct {
 	path: string,
 }
-File_Removed :: struct {
+Ev_Moved :: struct {
+	from: string,
+	to:   string,
+}
+Ev_Removed :: struct {
 	path: string,
 }
-File_Renamed :: struct {
+Ev_Renamed :: struct {
 	old_path: string,
 	new_path: string,
 }
@@ -34,8 +48,8 @@ Msg_Buffer :: struct {
 	messages:       [dynamic]Msg,
 }
 
-_push_message :: proc(buf: ^Msg_Buffer, msg: Msg) {
-	append(&buf.messages, msg)
+_push_message :: proc(buf: ^Msg_Buffer, target: Target, ev: Event) {
+	append(&buf.messages, Msg{target = target, event = ev})
 }
 
 _tick :: proc(buf: ^Msg_Buffer, msg_queue: ^queue.Queue(Msg)) {

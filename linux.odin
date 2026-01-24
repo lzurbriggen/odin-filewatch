@@ -93,6 +93,10 @@ worker_handle_events :: proc(state: ^Worker_State) {
 		log.error(err)
 		return
 	}
+	move_evs := make(map[u32]struct {
+			target: Target,
+			ev:     Ev_Moved,
+		}, context.temp_allocator)
 	i := 0
 	for i < evs_len {
 		event := cast(^linux.Inotify_Event)&read_buf[i]
@@ -116,11 +120,14 @@ worker_handle_events :: proc(state: ^Worker_State) {
 			log.error("Not able to build relative path", state.root_path, path_full, rerr)
 			continue
 		}
+
+		target: Target = .Dir if .ISDIR in event.mask else .File
+
 		// TODO: clean up
 		if .IGNORED in event.mask {
 			// watch_remove(&state, event.wd)
 		} else if .CREATE in event.mask {
-			_push_message(&state.msg_buf, File_Created{path = strings.clone(rel_path)})
+			_push_message(&state.msg_buf, target, Ev_Created{path = strings.clone(rel_path)})
 			// TODO: walk new dir and push created messages for files
 			if .ISDIR in event.mask {
 				walker := os2.walker_create(path)
@@ -134,7 +141,8 @@ worker_handle_events :: proc(state: ^Worker_State) {
 						log.error("Not able to build relative path", fi.fullpath, rerr)
 						continue
 					}
-					_push_message(&state.msg_buf, File_Created{path = file_rel_path})
+					target: Target = .Dir if fi.type == .Directory else .File
+					_push_message(&state.msg_buf, target, Ev_Created{path = file_rel_path})
 					if fi.type == .Directory {
 						watch_add(state, strings.clone(fi.fullpath))
 					}
@@ -142,15 +150,24 @@ worker_handle_events :: proc(state: ^Worker_State) {
 				watch_add(state, path)
 			}
 		} else if .DELETE in event.mask {
-			_push_message(&state.msg_buf, File_Removed{path = strings.clone(rel_path)})
+			_push_message(&state.msg_buf, target, Ev_Removed{path = strings.clone(rel_path)})
 			if .ISDIR in event.mask {
 				watch_remove(state, event.wd)
 			}
+		} else if .MOVED_FROM in event.mask {
+			_, v, _, _ := map_entry(&move_evs, event.cookie)
+			v.ev.from = strings.clone(rel_path)
+		} else if .MOVED_TO in event.mask {
+			_, v, _, _ := map_entry(&move_evs, event.cookie)
+			v.ev.to = strings.clone(rel_path)
 		} else if .CLOSE_WRITE in event.mask {
-			_push_message(&state.msg_buf, File_Modified{path = strings.clone(rel_path)})
+			_push_message(&state.msg_buf, target, Ev_Modified{path = strings.clone(rel_path)})
 		} else {
 			log.warn("unhandled", event)
 		}
+	}
+	for _, msg in move_evs {
+		_push_message(&state.msg_buf, msg.target, msg.ev)
 	}
 }
 

@@ -22,15 +22,14 @@ recursive :: proc(t: ^testing.T) {
 		cud_file(t, "tmp/inner/bar")
 
 		changes := [?]filewatch.Msg {
-			filewatch.File_Created{path = "test.txt"},
-			filewatch.File_Modified{path = "test.txt"},
-			filewatch.File_Removed{path = "test.txt"},
-			filewatch.File_Created{path = "inner"},
+			{target = .File, event = filewatch.Ev_Created{path = "test.txt"}},
+			{target = .File, event = filewatch.Ev_Modified{path = "test.txt"}},
+			{target = .File, event = filewatch.Ev_Removed{path = "test.txt"}},
+			{target = .Dir, event = filewatch.Ev_Created{path = "inner"}},
 			// TODO: flaky
-			filewatch.File_Created{path = "inner/bar"},
-			filewatch.File_Modified{path = "inner/bar"},
-			filewatch.File_Removed{path = "inner/bar"},
-			nil,
+			{target = .File, event = filewatch.Ev_Created{path = "inner/bar"}},
+			{target = .File, event = filewatch.Ev_Modified{path = "inner/bar"}},
+			{target = .File, event = filewatch.Ev_Removed{path = "inner/bar"}},
 		}
 		receive_and_compare(t, w.chan, changes)
 	}
@@ -51,15 +50,14 @@ non_recursive :: proc(t: ^testing.T) {
 	cud_file(t, "tmp_nr/inner/bar")
 
 	changes := [?]filewatch.Msg {
-		filewatch.File_Created{path = "test.txt"},
-		filewatch.File_Modified{path = "test.txt"},
-		filewatch.File_Removed{path = "test.txt"},
-		filewatch.File_Created{path = "inner"},
+		{target = .File, event = filewatch.Ev_Created{path = "test.txt"}},
+		{target = .File, event = filewatch.Ev_Modified{path = "test.txt"}},
+		{target = .File, event = filewatch.Ev_Removed{path = "test.txt"}},
+		{target = .Dir, event = filewatch.Ev_Created{path = "inner"}},
 		// TODO: non-recursive not working
-		filewatch.File_Created{path = "inner/bar"},
-		filewatch.File_Modified{path = "inner/bar"},
-		filewatch.File_Removed{path = "inner/bar"},
-		nil,
+		{target = .File, event = filewatch.Ev_Created{path = "inner/bar"}},
+		{target = .File, event = filewatch.Ev_Modified{path = "inner/bar"}},
+		{target = .File, event = filewatch.Ev_Removed{path = "inner/bar"}},
 	}
 	receive_and_compare(t, w.chan, changes)
 }
