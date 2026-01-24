@@ -1,0 +1,14 @@
+version: "3"
+
+tasks:
+  dev:
+    cmds:
+      - odin run . -debug
+
+  test:
+    cmds:
+      - cmd: odin test .
+  test:debug:
+    cmds:
+      - cmd: odin test . -debug
+
