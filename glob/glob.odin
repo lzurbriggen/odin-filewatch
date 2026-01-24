@@ -1,11 +1,13 @@
 package glob
 
 import "core:log"
+import "core:mem/virtual"
 import "core:unicode"
 import "core:unicode/utf8"
 
 Glob_Prepared :: struct {
-	toks: []Glob_Token,
+	arena: virtual.Arena,
+	toks:  []Glob_Token,
 }
 
 Glob_Token :: union {
@@ -36,6 +38,12 @@ Err :: enum {
 }
 
 glob_from_pattern :: proc(pat: string) -> (glob: Glob_Prepared, glob_err: Err) {
+	err := virtual.arena_init_growing(&glob.arena)
+	if err != nil {
+		// TODO
+		return
+	}
+	context.allocator = virtual.arena_allocator(&glob.arena)
 	parser := Parser {
 		runes = utf8.string_to_runes(pat),
 		ast   = make([dynamic]Glob_Token),
@@ -47,10 +55,12 @@ glob_from_pattern :: proc(pat: string) -> (glob: Glob_Prepared, glob_err: Err) {
 		log.debug(tok)
 		append(&p.ast, tok)
 	}
-	glob = Glob_Prepared {
-		toks = p.ast[:],
-	}
+	glob.toks = p.ast[:]
 	return
+}
+
+pattern_destroy :: proc(prep: ^Glob_Prepared) {
+	virtual.arena_destroy(&prep.arena)
 }
 
 match :: proc {
@@ -63,9 +73,19 @@ match_with_str :: proc(pattern: string, input: string) -> bool {
 	if err != nil {
 		return false
 	}
+	defer pattern_destroy(&prep)
 	return match_with_prep(prep, input)
 }
 match_with_prep :: proc(prepared: Glob_Prepared, input: string) -> bool {
+	arena: virtual.Arena
+	err := virtual.arena_init_growing(&arena)
+	if err != nil {
+		// TODO: err
+		return false
+	}
+	alloc := virtual.arena_allocator(&arena)
+	defer free_all(alloc)
+	context.allocator = alloc
 	runes := utf8.string_to_runes(input)
 	defer delete(runes)
 	_, match_res := _match_runes(prepared.toks, runes)
@@ -74,7 +94,6 @@ match_with_prep :: proc(prepared: Glob_Prepared, input: string) -> bool {
 _match_runes :: proc(prepared: []Glob_Token, runes: []rune) -> (end_idx: int, matched: bool) {
 	pos := 0
 	for tok, tok_i in prepared {
-		log.info("rem", runes[pos:], tok, pos)
 		if pos >= len(runes) {return}
 
 		switch t in tok {
@@ -172,7 +191,6 @@ scan :: proc(p: ^Parser, break_on: rune = 0) -> (tok: Glob_Token, tok_ok: bool) 
 				log.warn("Failed to read tok")
 				return
 			}
-			log.info(inner_tok)
 			append(&grp, inner_tok)
 			if r, ok := curr(p); ok {
 				if r == ',' {
@@ -195,6 +213,8 @@ scan :: proc(p: ^Parser, break_on: rune = 0) -> (tok: Glob_Token, tok_ok: bool) 
 		adv(p)
 		return Tok_Any_Char{}, ok
 	case '!':
+		adv(p)
+		return Tok_Neg{}, ok
 	case:
 		return scan_lit(p, break_on), true
 	}
