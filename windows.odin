@@ -162,15 +162,15 @@ _handle_events :: proc(entry: ^Windows_Entry, msg_buf: ^Msg_Buffer, msg_queue: ^
 			case .None:
 				panic("none case should have be handled before")
 			case .FILE_ACTION_ADDED:
-				_push_message(msg_buf, File_Created{path = file_path})
+				_push_message(msg_buf, Msg_Created{path = file_path})
 			case .FILE_ACTION_REMOVED:
-				_push_message(msg_buf, File_Removed{path = file_path})
+				_push_message(msg_buf, Msg_Removed{path = file_path})
 			case .FILE_ACTION_MODIFIED:
-				_push_message(msg_buf, File_Modified{path = file_path})
+				_push_message(msg_buf, Msg_Modified{path = file_path})
 			case .FILE_ACTION_RENAMED_OLD_NAME:
-				_push_message(msg_buf, File_Modified{path = file_path})
+				_push_message(msg_buf, Msg_Modified{path = file_path})
 			case .FILE_ACTION_RENAMED_NEW_NAME:
-				_push_message(msg_buf, File_Modified{path = file_path})
+				_push_message(msg_buf, Msg_Modified{path = file_path})
 			}
 
 			if info.next_entry_offset == 0 {

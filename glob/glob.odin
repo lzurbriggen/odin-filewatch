@@ -1,7 +1,6 @@
 package glob
 
 import "core:log"
-import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
 
@@ -28,7 +27,7 @@ Tok_Any_Char :: struct {}
 Tok_Range :: struct {
 	// TODO
 }
-Tok_Or :: distinct []Glob_Token
+Tok_Or :: distinct [][]Glob_Token
 Tok_Neg :: struct {}
 
 Err :: enum {
@@ -54,24 +53,25 @@ glob_from_pattern :: proc(pat: string) -> (glob: Glob_Prepared, glob_err: Err) {
 	return
 }
 
-glob :: proc {
-	glob_str,
-	glob_prepared,
+match :: proc {
+	match_with_str,
+	match_with_prep,
 }
 
-glob_str :: proc(pattern: string, input: string) -> bool {
+match_with_str :: proc(pattern: string, input: string) -> bool {
 	prep, err := glob_from_pattern(pattern)
 	if err != nil {
 		return false
 	}
-	return glob_prepared(prep, input)
+	return match_with_prep(prep, input)
 }
-glob_prepared :: proc(prepared: Glob_Prepared, input: string) -> bool {
+match_with_prep :: proc(prepared: Glob_Prepared, input: string) -> bool {
 	runes := utf8.string_to_runes(input)
 	defer delete(runes)
-	return _glob_toks(prepared.toks, runes)
+	_, match_res := _match_runes(prepared.toks, runes)
+	return match_res
 }
-_glob_toks :: proc(prepared: []Glob_Token, runes: []rune) -> (matched: bool) {
+_match_runes :: proc(prepared: []Glob_Token, runes: []rune) -> (end_idx: int, matched: bool) {
 	pos := 0
 	for tok, tok_i in prepared {
 		log.info("rem", runes[pos:], tok, pos)
@@ -88,8 +88,11 @@ _glob_toks :: proc(prepared: []Glob_Token, runes: []rune) -> (matched: bool) {
 				if r == '/' || r == '\\' {
 					last_off = i
 					// TODO: are there better solutions than this full eval?
-					if _glob_toks(prepared[tok_i + 1:], runes[pos + last_off:]) {
-						return true
+					if end_idx, matched := _match_runes(
+						prepared[tok_i + 1:],
+						runes[pos + last_off:],
+					); matched {
+						return end_idx, true
 					}
 				}
 			}
@@ -119,13 +122,18 @@ _glob_toks :: proc(prepared: []Glob_Token, runes: []rune) -> (matched: bool) {
 		case Tok_Range:
 
 		case Tok_Or:
-			// TODO: incomplete
-			if !_glob_toks(cast([]Glob_Token)t, runes[pos:]) {return}
+			for grp in t {
+				if matched_pos, matched := _match_runes(cast([]Glob_Token)grp, runes[pos:]);
+				   matched {
+					return matched_pos, true
+				}
+			}
+			return pos, false
 
 		case Tok_Neg:
 		}
 	}
-	return true
+	return pos, true
 }
 
 @(private)
@@ -137,9 +145,9 @@ Parser :: struct {
 }
 
 @(private)
-scan :: proc(p: ^Parser) -> (tok: Glob_Token, tok_ok: bool) {
+scan :: proc(p: ^Parser, break_on: rune = 0) -> (tok: Glob_Token, tok_ok: bool) {
 	r, ok := curr(p)
-	if !ok {
+	if !ok || (break_on != 0 && r == break_on) {
 		return
 	}
 	switch r {
@@ -154,22 +162,32 @@ scan :: proc(p: ^Parser) -> (tok: Glob_Token, tok_ok: bool) {
 		}
 		return Tok_Any_Text{}, true
 	case '{':
+		grps := make([dynamic][]Glob_Token)
 		grp := make([dynamic]Glob_Token)
 		adv(p)
 		for {
-			inner_tok, ok := scan(p)
+			inner_tok, ok := scan(p, ',')
 			if !ok {
 				// TODO: err
+				log.warn("Failed to read tok")
 				return
 			}
+			log.info(inner_tok)
 			append(&grp, inner_tok)
 			if r, ok := curr(p); ok {
+				if r == ',' {
+					adv(p)
+					append(&grps, grp[:])
+					grp = make([dynamic]Glob_Token)
+				}
 				if r == '}' {
 					adv(p)
-					return Tok_Or(grp[:]), true
+					append(&grps, grp[:])
+					return Tok_Or(grps[:]), true
 				}
 			}
 		}
+		log.debug(grps)
 	// TODO: err
 	case '[':
 		adv(p)
@@ -178,13 +196,13 @@ scan :: proc(p: ^Parser) -> (tok: Glob_Token, tok_ok: bool) {
 		return Tok_Any_Char{}, ok
 	case '!':
 	case:
-		return scan_lit(p), true
+		return scan_lit(p, break_on), true
 	}
 	return
 }
 
 @(private)
-scan_lit :: proc(p: ^Parser) -> Tok_Lit {
+scan_lit :: proc(p: ^Parser, break_on: rune = 0) -> Tok_Lit {
 	escaping := false
 	r, ok := curr(p)
 	if !ok {
@@ -196,6 +214,10 @@ scan_lit :: proc(p: ^Parser) -> Tok_Lit {
 			switch r {
 			case '/', '*', '{', '}', '[', ']', '?':
 				break loop
+			case break_on:
+				if break_on != 0 {
+					break loop
+				}
 			}
 		}
 		if !escaping && r == '\\' {
