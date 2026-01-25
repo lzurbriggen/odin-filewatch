@@ -27,7 +27,7 @@ Tok_Globstar :: struct {}
 Tok_Any_Text :: struct {}
 Tok_Any_Char :: struct {}
 Tok_Range :: struct {
-	// TODO
+	a, b: rune,
 }
 Tok_Or :: distinct [][]Glob_Token
 Tok_Neg :: struct {}
@@ -52,7 +52,6 @@ glob_from_pattern :: proc(pat: string) -> (glob: Glob_Prepared, glob_err: Err) {
 
 	for {
 		tok := scan(p) or_break
-		log.debug(tok)
 		append(&p.ast, tok)
 	}
 	glob.toks = p.ast[:]
@@ -122,6 +121,10 @@ _match_runes :: proc(prepared: []Glob_Token, runes: []rune) -> (end_idx: int, ma
 				if r == '/' || r == '\\' {
 					break
 				}
+				// TODO: are there better solutions than this full eval?
+				if end_idx, matched := _match_runes(prepared[tok_i + 1:], runes[pos:]); matched {
+					return end_idx, true
+				}
 				pos += 1
 			}
 
@@ -139,6 +142,9 @@ _match_runes :: proc(prepared: []Glob_Token, runes: []rune) -> (end_idx: int, ma
 			pos += off
 
 		case Tok_Range:
+			r := runes[pos]
+			if r < t.a || r > t.b {return}
+			pos += 1
 
 		case Tok_Or:
 			for grp in t {
@@ -174,8 +180,7 @@ scan :: proc(p: ^Parser, break_on: rune = 0) -> (tok: Glob_Token, tok_ok: bool) 
 		adv(p)
 		return Tok_Slash{}, true
 	case '*':
-		adv(p)
-		if nr, ok := curr(p); ok && nr == '*' {
+		if nr, ok := adv(p); ok && nr == '*' {
 			adv(p)
 			return Tok_Globstar{}, ok
 		}
@@ -205,10 +210,48 @@ scan :: proc(p: ^Parser, break_on: rune = 0) -> (tok: Glob_Token, tok_ok: bool) 
 				}
 			}
 		}
-		log.debug(grps)
 	// TODO: err
 	case '[':
-		adv(p)
+		escaping := false
+		r, ok := adv(p)
+		if !ok {
+			// TODO: err
+			return
+		}
+		// TODO: alloc
+		groups := make([dynamic][]Glob_Token, context.temp_allocator)
+		range: Maybe(Tok_Range) = nil
+		for {
+			if !escaping {
+				if r == ']' {
+					adv(p)
+					return Tok_Or(groups[:]), true
+				}
+				if next(p) == '-' {
+					range = Tok_Range {
+						a = r,
+					}
+					adv(p) or_break
+					r = adv(p) or_break
+					continue
+				}
+			}
+			if !escaping && r == '\\' {
+				escaping = true
+			} else {
+				slc := make([]Glob_Token, 1)
+				if ran, ok := range.(Tok_Range); ok {
+					ran.b = r
+					slc[0] = ran
+				} else {
+					slc[0] = utf8.runes_to_string({r})
+				}
+				append(&groups, slc)
+				escaping = false
+			}
+			r = adv(p) or_break
+		}
+	// TODO: err
 	case '?':
 		adv(p)
 		return Tok_Any_Char{}, ok
@@ -228,6 +271,7 @@ scan_lit :: proc(p: ^Parser, break_on: rune = 0) -> Tok_Lit {
 	if !ok {
 		return ""
 	}
+	// TODO: alloc
 	runes := make([dynamic]rune, context.temp_allocator)
 	loop: for {
 		if !escaping {
@@ -265,8 +309,8 @@ adv :: proc(p: ^Parser, n := 1) -> (r: rune, ok: bool) #optional_ok {
 	return curr(p)
 }
 @(private)
-next :: proc(p: ^Parser) -> (r: rune, ok: bool) #optional_ok {
-	return curr(p, p.pos + 1)
+next :: proc(p: ^Parser, off := 1) -> (r: rune, ok: bool) #optional_ok {
+	return curr(p, p.pos + off)
 }
 
 @(private)
@@ -289,6 +333,4 @@ is_digit :: proc(r: rune) -> bool {
 	}
 	return unicode.is_digit(r)
 }
-// @(private)
-// read_
 

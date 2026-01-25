@@ -26,6 +26,14 @@ parse_test :: proc(t: ^testing.T) {
 		glob_from_pattern("{**/bin,bin}"),
 		{Tok_Or{{Tok_Globstar{}, Tok_Slash{}, "bin"}, {"bin"}}},
 	)
+
+	expect_match(
+		t,
+		glob_from_pattern("[ab0-9]"),
+		{Tok_Or{{"a"}, {"b"}, {Tok_Range{a = '0', b = '9'}}}},
+	)
+	expect_match(t, glob_from_pattern("[0-9]"), {Tok_Or{{Tok_Range{a = '0', b = '9'}}}})
+
 }
 
 @(test)
@@ -56,6 +64,31 @@ match_test :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, match("**/foo/{**/bin,bin}", "bar/foo/test/2/bin"), true)
 	testing.expect_value(t, match("**/foo/{**/bin,?bar}", "bar/foo/8bar"), true)
+
+	testing.expect_value(t, match("[abc]", "a"), true)
+	testing.expect_value(t, match("[abc]", "b"), true)
+	testing.expect_value(t, match("[abc]", "c"), true)
+	testing.expect_value(t, match("[abc]", "d"), false)
+	testing.expect_value(t, match("[0-9]", "0"), true)
+	testing.expect_value(t, match("[0-9]", "9"), true)
+	testing.expect_value(t, match("[0-9]", "5"), true)
+	testing.expect_value(t, match("[0-9]", "a"), false)
+	testing.expect_value(t, match("[a-c]", "a"), true)
+	testing.expect_value(t, match("[a-c]", "b"), true)
+	testing.expect_value(t, match("[a-c]", "c"), true)
+	testing.expect_value(t, match("[a-c]", "d"), false)
+
+	testing.expect_value(t, match("[a-c]", "c"), true)
+	testing.expect_value(t, match("[<->]", "<"), true)
+	testing.expect_value(t, match("[<->]", "="), true)
+	testing.expect_value(t, match("[<->]", ">"), true)
+	testing.expect_value(t, match("[<->]", "?"), false)
+	testing.expect_value(t, match("[ɐ-ʯ]", "ʧ"), true)
+	testing.expect_value(t, match("[ɐ-ʯ]", "ʰ"), false)
+	testing.expect_value(t, match("[٠-٩]", "٢"), true)
+
+	testing.expect_value(t, match("/foo/**/[a-zA-Z]elp", "/foo//welp"), true)
+	testing.expect_value(t, match("/foo/**/[a-zA-Z]elp", "/foo/bar/Help"), true)
 }
 
 @(private)
