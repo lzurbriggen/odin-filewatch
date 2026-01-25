@@ -7,30 +7,34 @@ import "core:testing"
 parse_test :: proc(t: ^testing.T) {
 	S :: Tok_Symbol
 
-	expect_match(t, glob_from_pattern(""), {})
-	expect_match(t, glob_from_pattern("/"), {S.Slash})
-	expect_match(t, glob_from_pattern("foo/bar"), {"foo", S.Slash, "bar"})
+	expect_match(t, pattern_from_string(""), {})
+	expect_match(t, pattern_from_string("/"), {S.Slash})
+	expect_match(t, pattern_from_string("foo/bar"), {"foo", S.Slash, "bar"})
 	expect_match(
 		t,
-		glob_from_pattern("foo/*/*.bar"),
+		pattern_from_string("foo/*/*.bar"),
 		{"foo", S.Slash, S.Any_Text, S.Slash, S.Any_Text, ".bar"},
 	)
-	expect_match(t, glob_from_pattern("foo/**/bar"), {"foo", S.Slash, S.Globstar, S.Slash, "bar"})
-	expect_match(t, glob_from_pattern("foo/?.bar"), {"foo", S.Slash, S.Any_Char, ".bar"})
-
-	expect_match(t, glob_from_pattern("{foo,bar}"), {Tok_Or{{"foo"}, {"bar"}}})
 	expect_match(
 		t,
-		glob_from_pattern("{**/bin,bin}"),
+		pattern_from_string("foo/**/bar"),
+		{"foo", S.Slash, S.Globstar, S.Slash, "bar"},
+	)
+	expect_match(t, pattern_from_string("foo/?.bar"), {"foo", S.Slash, S.Any_Char, ".bar"})
+
+	expect_match(t, pattern_from_string("{foo,bar}"), {Tok_Or{{"foo"}, {"bar"}}})
+	expect_match(
+		t,
+		pattern_from_string("{**/bin,bin}"),
 		{Tok_Or{{S.Globstar, S.Slash, "bin"}, {"bin"}}},
 	)
 
 	expect_match(
 		t,
-		glob_from_pattern("[ab0-9]"),
+		pattern_from_string("[ab0-9]"),
 		{Tok_Or{{"a"}, {"b"}, {Tok_Range{a = '0', b = '9'}}}},
 	)
-	expect_match(t, glob_from_pattern("[0-9]"), {Tok_Or{{Tok_Range{a = '0', b = '9'}}}})
+	expect_match(t, pattern_from_string("[0-9]"), {Tok_Or{{Tok_Range{a = '0', b = '9'}}}})
 
 }
 
@@ -92,7 +96,7 @@ match_test :: proc(t: ^testing.T) {
 @(private)
 expect_match :: proc(
 	t: ^testing.T,
-	glob: Glob_Prepared,
+	glob: Pattern,
 	err: Err,
 	expected: []Glob_Token,
 	loc := #caller_location,

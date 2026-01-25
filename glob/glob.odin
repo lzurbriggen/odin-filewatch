@@ -2,10 +2,9 @@ package glob
 
 import "core:log"
 import "core:mem/virtual"
-import "core:unicode"
 import "core:unicode/utf8"
 
-Glob_Prepared :: struct {
+Pattern :: struct {
 	arena: virtual.Arena,
 	toks:  []Glob_Token,
 }
@@ -35,7 +34,7 @@ Err :: enum {
 	No_Closing_Bracket,
 }
 
-glob_from_pattern :: proc(pat: string) -> (glob: Glob_Prepared, glob_err: Err) {
+pattern_from_string :: proc(pat: string) -> (glob: Pattern, glob_err: Err) {
 	err := virtual.arena_init_growing(&glob.arena)
 	if err != nil {
 		// TODO
@@ -56,24 +55,24 @@ glob_from_pattern :: proc(pat: string) -> (glob: Glob_Prepared, glob_err: Err) {
 	return
 }
 
-pattern_destroy :: proc(prep: ^Glob_Prepared) {
+pattern_destroy :: proc(prep: ^Pattern) {
 	virtual.arena_destroy(&prep.arena)
 }
 
 match :: proc {
-	match_with_str,
-	match_with_prep,
+	match_string,
+	match_pattern,
 }
 
-match_with_str :: proc(pattern: string, input: string) -> bool {
-	prep, err := glob_from_pattern(pattern)
+match_string :: proc(pattern: string, input: string) -> bool {
+	prep, err := pattern_from_string(pattern)
 	if err != nil {
 		return false
 	}
 	defer pattern_destroy(&prep)
-	return match_with_prep(prep, input)
+	return match_pattern(prep, input)
 }
-match_with_prep :: proc(prepared: Glob_Prepared, input: string) -> bool {
+match_pattern :: proc(prepared: Pattern, input: string) -> bool {
 	arena: virtual.Arena
 	err := virtual.arena_init_growing(&arena)
 	if err != nil {
@@ -85,10 +84,11 @@ match_with_prep :: proc(prepared: Glob_Prepared, input: string) -> bool {
 	context.allocator = alloc
 	runes := utf8.string_to_runes(input)
 	defer delete(runes)
-	_, match_res := _match_runes(prepared.toks, runes)
+	_, match_res := _match(prepared.toks, runes)
 	return match_res
 }
-_match_runes :: proc(prepared: []Glob_Token, runes: []rune) -> (end_idx: int, matched: bool) {
+
+_match :: proc(prepared: []Glob_Token, runes: []rune) -> (end_idx: int, matched: bool) {
 	pos := 0
 	for tok, tok_i in prepared {
 		if pos >= len(runes) {return}
@@ -106,7 +106,7 @@ _match_runes :: proc(prepared: []Glob_Token, runes: []rune) -> (end_idx: int, ma
 					if r == '/' || r == '\\' {
 						last_off = i
 						// TODO: are there better solutions than this full eval?
-						if end_idx, matched := _match_runes(
+						if end_idx, matched := _match(
 							prepared[tok_i + 1:],
 							runes[pos + last_off:],
 						); matched {
@@ -122,8 +122,7 @@ _match_runes :: proc(prepared: []Glob_Token, runes: []rune) -> (end_idx: int, ma
 						break
 					}
 					// TODO: are there better solutions than this full eval?
-					if end_idx, matched := _match_runes(prepared[tok_i + 1:], runes[pos:]);
-					   matched {
+					if end_idx, matched := _match(prepared[tok_i + 1:], runes[pos:]); matched {
 						return end_idx, true
 					}
 					pos += 1
@@ -152,8 +151,7 @@ _match_runes :: proc(prepared: []Glob_Token, runes: []rune) -> (end_idx: int, ma
 
 		case Tok_Or:
 			for grp in t {
-				if matched_pos, matched := _match_runes(cast([]Glob_Token)grp, runes[pos:]);
-				   matched {
+				if matched_pos, matched := _match(cast([]Glob_Token)grp, runes[pos:]); matched {
 					return matched_pos, true
 				}
 			}
@@ -314,26 +312,5 @@ adv :: proc(p: ^Parser, n := 1) -> (r: rune, ok: bool) #optional_ok {
 @(private)
 next :: proc(p: ^Parser, off := 1) -> (r: rune, ok: bool) #optional_ok {
 	return curr(p, p.pos + off)
-}
-
-@(private)
-is_letter :: proc(r: rune) -> bool {
-	if r < utf8.RUNE_SELF {
-		switch r {
-		case '_':
-			return true
-		case 'A' ..= 'Z', 'a' ..= 'z':
-			return true
-		}
-	}
-	return unicode.is_letter(r)
-}
-
-@(private)
-is_digit :: proc(r: rune) -> bool {
-	if '0' <= r && r <= '9' {
-		return true
-	}
-	return unicode.is_digit(r)
 }
 
