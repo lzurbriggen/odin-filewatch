@@ -5,26 +5,24 @@ import "core:testing"
 
 @(test)
 parse_test :: proc(t: ^testing.T) {
+	S :: Tok_Symbol
+
 	expect_match(t, glob_from_pattern(""), {})
-	expect_match(t, glob_from_pattern("/"), {Tok_Slash{}})
-	expect_match(t, glob_from_pattern("foo/bar"), {"foo", Tok_Slash{}, "bar"})
+	expect_match(t, glob_from_pattern("/"), {S.Slash})
+	expect_match(t, glob_from_pattern("foo/bar"), {"foo", S.Slash, "bar"})
 	expect_match(
 		t,
 		glob_from_pattern("foo/*/*.bar"),
-		{"foo", Tok_Slash{}, Tok_Any_Text{}, Tok_Slash{}, Tok_Any_Text{}, ".bar"},
+		{"foo", S.Slash, S.Any_Text, S.Slash, S.Any_Text, ".bar"},
 	)
-	expect_match(
-		t,
-		glob_from_pattern("foo/**/bar"),
-		{"foo", Tok_Slash{}, Tok_Globstar{}, Tok_Slash{}, "bar"},
-	)
-	expect_match(t, glob_from_pattern("foo/?.bar"), {"foo", Tok_Slash{}, Tok_Any_Char{}, ".bar"})
+	expect_match(t, glob_from_pattern("foo/**/bar"), {"foo", S.Slash, S.Globstar, S.Slash, "bar"})
+	expect_match(t, glob_from_pattern("foo/?.bar"), {"foo", S.Slash, S.Any_Char, ".bar"})
 
 	expect_match(t, glob_from_pattern("{foo,bar}"), {Tok_Or{{"foo"}, {"bar"}}})
 	expect_match(
 		t,
 		glob_from_pattern("{**/bin,bin}"),
-		{Tok_Or{{Tok_Globstar{}, Tok_Slash{}, "bin"}, {"bin"}}},
+		{Tok_Or{{S.Globstar, S.Slash, "bin"}, {"bin"}}},
 	)
 
 	expect_match(
@@ -121,28 +119,12 @@ tok_match :: proc(t: ^testing.T, a, b: Glob_Token, loc := #caller_location) {
 		}
 	case Tok_Range:
 	// TODO
-	case Tok_Any_Char:
-		b, ok := b.(Tok_Any_Char)
-		testing.expect_value(t, ok, true, loc)
-		testing.expect_value(t, a, b, loc)
-	case Tok_Any_Text:
-		b, ok := b.(Tok_Any_Text)
-		testing.expect_value(t, ok, true, loc)
-		testing.expect_value(t, a, b, loc)
-	case Tok_Globstar:
-		b, ok := b.(Tok_Globstar)
+	case Tok_Symbol:
+		b, ok := b.(Tok_Symbol)
 		testing.expect_value(t, ok, true, loc)
 		testing.expect_value(t, a, b, loc)
 	case Tok_Lit:
 		b, ok := b.(Tok_Lit)
-		testing.expect_value(t, ok, true, loc)
-		testing.expect_value(t, a, b, loc)
-	case Tok_Neg:
-		b, ok := b.(Tok_Neg)
-		testing.expect_value(t, ok, true, loc)
-		testing.expect_value(t, a, b, loc)
-	case Tok_Slash:
-		b, ok := b.(Tok_Slash)
 		testing.expect_value(t, ok, true, loc)
 		testing.expect_value(t, a, b, loc)
 	}

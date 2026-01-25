@@ -11,26 +11,24 @@ Glob_Prepared :: struct {
 }
 
 Glob_Token :: union {
+	Tok_Symbol,
 	Tok_Lit,
-	Tok_Slash,
-	Tok_Globstar,
-	Tok_Any_Text,
-	Tok_Any_Char,
 	Tok_Range,
 	Tok_Or,
-	Tok_Neg,
 }
 
 Tok_Lit :: string
-Tok_Slash :: struct {}
-Tok_Globstar :: struct {}
-Tok_Any_Text :: struct {}
-Tok_Any_Char :: struct {}
+Tok_Symbol :: enum u8 {
+	Slash,
+	Globstar,
+	Any_Char,
+	Any_Text,
+	Negate,
+}
 Tok_Range :: struct {
 	a, b: rune,
 }
 Tok_Or :: distinct [][]Glob_Token
-Tok_Neg :: struct {}
 
 Err :: enum {
 	No_Closing_Brace,
@@ -96,42 +94,48 @@ _match_runes :: proc(prepared: []Glob_Token, runes: []rune) -> (end_idx: int, ma
 		if pos >= len(runes) {return}
 
 		switch t in tok {
-		case Tok_Slash:
-			r := runes[pos]
-			if r != '/' && r != '\\' {return}
-			pos += 1
-		case Tok_Globstar:
-			last_off := 0
-			for r, i in runes[pos:] {
-				if r == '/' || r == '\\' {
-					last_off = i
-					// TODO: are there better solutions than this full eval?
-					if end_idx, matched := _match_runes(
-						prepared[tok_i + 1:],
-						runes[pos + last_off:],
-					); matched {
-						return end_idx, true
+		case Tok_Symbol:
+			switch t {
+			case .Slash:
+				r := runes[pos]
+				if r != '/' && r != '\\' {return}
+				pos += 1
+			case .Globstar:
+				last_off := 0
+				for r, i in runes[pos:] {
+					if r == '/' || r == '\\' {
+						last_off = i
+						// TODO: are there better solutions than this full eval?
+						if end_idx, matched := _match_runes(
+							prepared[tok_i + 1:],
+							runes[pos + last_off:],
+						); matched {
+							return end_idx, true
+						}
 					}
 				}
-			}
-			pos = last_off + pos
+				pos = last_off + pos
 
-		case Tok_Any_Text:
-			for r, i in runes[pos:] {
-				if r == '/' || r == '\\' {
-					break
+			case .Any_Text:
+				for r, i in runes[pos:] {
+					if r == '/' || r == '\\' {
+						break
+					}
+					// TODO: are there better solutions than this full eval?
+					if end_idx, matched := _match_runes(prepared[tok_i + 1:], runes[pos:]);
+					   matched {
+						return end_idx, true
+					}
+					pos += 1
 				}
-				// TODO: are there better solutions than this full eval?
-				if end_idx, matched := _match_runes(prepared[tok_i + 1:], runes[pos:]); matched {
-					return end_idx, true
-				}
+
+			case .Any_Char:
+				r := runes[pos]
+				if r == '/' || r == '\\' {return}
 				pos += 1
-			}
 
-		case Tok_Any_Char:
-			r := runes[pos]
-			if r == '/' || r == '\\' {return}
-			pos += 1
+			case .Negate:
+			}
 
 		case Tok_Lit:
 			off := 0
@@ -155,7 +159,6 @@ _match_runes :: proc(prepared: []Glob_Token, runes: []rune) -> (end_idx: int, ma
 			}
 			return pos, false
 
-		case Tok_Neg:
 		}
 	}
 	return pos, true
@@ -178,13 +181,13 @@ scan :: proc(p: ^Parser, break_on: rune = 0) -> (tok: Glob_Token, tok_ok: bool) 
 	switch r {
 	case '/':
 		adv(p)
-		return Tok_Slash{}, true
+		return Tok_Symbol.Slash, true
 	case '*':
 		if nr, ok := adv(p); ok && nr == '*' {
 			adv(p)
-			return Tok_Globstar{}, ok
+			return Tok_Symbol.Globstar, ok
 		}
-		return Tok_Any_Text{}, true
+		return .Any_Text, true
 	case '{':
 		grps := make([dynamic][]Glob_Token)
 		grp := make([dynamic]Glob_Token)
@@ -254,10 +257,10 @@ scan :: proc(p: ^Parser, break_on: rune = 0) -> (tok: Glob_Token, tok_ok: bool) 
 	// TODO: err
 	case '?':
 		adv(p)
-		return Tok_Any_Char{}, ok
+		return .Any_Char, ok
 	case '!':
 		adv(p)
-		return Tok_Neg{}, ok
+		return .Negate, ok
 	case:
 		return scan_lit(p, break_on), true
 	}
