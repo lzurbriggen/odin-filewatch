@@ -1,4 +1,4 @@
-package fswatch
+package dirwatch
 
 import "glob"
 

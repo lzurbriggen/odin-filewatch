@@ -1,10 +1,9 @@
 #+build linux
-package fswatch
+package dirwatch
 
 import "core:c"
 import "core:container/queue"
 import "core:log"
-import "core:mem/virtual"
 import "core:os/os2"
 import "core:path/filepath"
 import "core:strings"
@@ -57,13 +56,10 @@ worker_setup :: proc(data: ^Worker_Data) -> (state: Worker_State, ok: bool) {
 		return {}, false
 	}
 
-	// ev_queue := queue.Queue(Msg){}
-	// queue.init(&ev_queue)
 	state = Worker_State {
 		root_path  = strings.clone(data.path),
 		inotify_fd = inotify_fd,
 		watches    = make(map[linux.Wd]string),
-		// ev_queue   = queue.make(),
 	}
 
 	walk_dir(&state, data.path)

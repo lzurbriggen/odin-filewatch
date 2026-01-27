@@ -1,4 +1,4 @@
-package fswatch
+package dirwatch
 
 import "core:container/queue"
 import "core:log"

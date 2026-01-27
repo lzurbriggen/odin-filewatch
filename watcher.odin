@@ -1,4 +1,4 @@
-package fswatch
+package dirwatch
 
 import "base:runtime"
 import "core:container/queue"
